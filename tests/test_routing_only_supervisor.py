@@ -36,7 +36,14 @@ class RoutingOnlySupervisorTest(unittest.TestCase):
             }
             for path, name in paths.items():
                 text = text.replace(path, str(work / name))
-            for script in ("routing-settings.sh", "vpn-bypass.sh", "website-routing.sh"):
+            uptime = work / "uptime"
+            uptime.write_text("100.00 0.00\n")
+            routing = work / "website-routing.sh"
+            routing.write_text(
+                (ROOT / "website-routing.sh").read_text().replace("/proc/uptime", str(uptime))
+            )
+            text = text.replace(". /website-routing.sh", f'. "{routing}"')
+            for script in ("routing-settings.sh", "vpn-bypass.sh"):
                 text = text.replace(f". /{script}", f'. "{ROOT / script}"')
             text = text.replace(" -S ", " -f ")
             supervisor = work / "supervisor.sh"
@@ -63,7 +70,7 @@ wg-quick() { printf 'wg-quick %s\n' "$*" >> "$WORK/log"; }
 dig() { echo 'selected.example. 60 IN A 9.9.9.9'; }
 curl() {
     printf 'curl %s\n' "$*" >> "$WORK/log"
-    if [[ "$*" == *%vpn1* ]]; then
+    if [[ "$*" == *ifhost!vpn1!* ]]; then
         [ ! -e "$WORK/secondary-probed" ] || return 1
         touch "$WORK/secondary-probed"
     fi
@@ -120,7 +127,7 @@ sleep() {
             self.assertIn("tailscaled --state=" + str(work / "tailscale/profiles/primary/tailscaled.state"), log)
             self.assertEqual(log.count("--advertise-exit-node"), 1)
             self.assertIn("--hostname=existing-exit", log)
-            self.assertIn("10.2.0.2%vpn1", log)
+            self.assertIn("ifhost!vpn1!10.2.0.2", log)
             self.assertIn("-d 9.9.9.9/32 -j MARK --set-xmark 131072/", classifier)
             self.assertIn("FORWARD -i ts0 -o vpn1 -m mark --mark 131072/", log)
             self.assertIn("blackhole default metric 32767 table 52001", log)

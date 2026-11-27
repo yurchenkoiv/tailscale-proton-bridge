@@ -13,10 +13,12 @@ class WebsiteRoutingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "commands"
             classifier = Path(directory) / "classifier"
+            uptime = Path(directory) / "uptime"
+            uptime.write_text("100.00 0.00\n")
             result = subprocess.run(
                 ["bash", "-euo", "pipefail", "-c", r"""
 source ./vpn-bypass.sh
-source ./website-routing.sh
+source <(sed "s|/proc/uptime|$UPTIME_FILE|" ./website-routing.sh)
 PROFILE_COUNT=2
 PROFILE_IDS=(usa ukraine)
 PROFILE_TYPES=(wireguard wireguard)
@@ -54,6 +56,7 @@ dig() {
                     **os.environ,
                     "COMMAND_LOG": str(log),
                     "CLASSIFIER": str(classifier),
+                    "UPTIME_FILE": str(uptime),
                     **settings,
                 },
                 text=True,
@@ -82,7 +85,7 @@ printf '%s\n' "$SITE_CONFLICTS_JSON"
             VPN_BYPASS_DOMAINS="direct.example",
         )
         self.assertEqual(conflicts, '["8.8.8.8"]')
-        self.assertNotIn("8.8.8.8", classifier)
+        self.assertIn("-d 8.8.8.8/32 -j MARK --set-xmark 65536/", classifier)
         self.assertNotIn("192.168.0.1", classifier)
         self.assertIn("-d 9.9.9.9/32 -j MARK --set-xmark 131072/", classifier)
         self.assertIn("-d 1.1.1.1/32 -j MARK --set-xmark 196608/", classifier)
@@ -92,6 +95,25 @@ printf '%s\n' "$SITE_CONFLICTS_JSON"
         self.assertIn("del default dev vpn1 metric 10 table 52001", commands)
         self.assertIn("FORWARD -i ts0 -o vpn1 -m mark --mark 131072/", commands)
         self.assertIn("FORWARD -i vpn1 -o ts0 -m mark --mark 100/", commands)
+
+    def test_wildcards_use_dns_sets_after_exact_matches(self):
+        commands, classifier, _ = self.run_routing(
+            """
+start_website_dns() { SITE_DNS_PID=999; }
+init_website_routing
+refresh_website_routing
+configure_website_dns_ingress ts0
+""",
+            VPN_ROUTING_DEFAULT="usa",
+            VPN_ROUTING_RULES="*.example.net@ukraine,*.example.org@usa",
+            VPN_BYPASS_DOMAINS="direct.example",
+        )
+        exact = classifier.index("-d 1.1.1.1/32")
+        wildcard = classifier.index("--match-set bridge-site-")
+        self.assertLess(exact, wildcard)
+        self.assertIn("--to-ports 1053", commands)
+        self.assertIn("-i ts0 -m addrtype --dst-type LOCAL", commands)
+        self.assertIn("-m set --match-set", classifier)
 
     def test_disabled_policy_does_not_change_routing(self):
         commands, classifier, _ = self.run_routing(
