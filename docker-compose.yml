@@ -14,10 +14,9 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
-      # Opção extra opcional, p. ex. BRIDGE_SECURITY_OPT=apparmor=unconfined em
-      # Docker-in-LXC (Proxmox). O valor por defeito repete a opção acima para
-      # não forçar nenhum perfil AppArmor em hosts sem AppArmor.
-      - ${BRIDGE_SECURITY_OPT:-no-new-privileges:true}
+      # Keep the AppArmor override optional without adding a duplicate YAML item.
+      # Docker accepts both ':' and '=' for security options.
+      - ${BRIDGE_SECURITY_OPT:-no-new-privileges=true}
     devices:
       - /dev/net/tun:/dev/net/tun
     sysctls:
