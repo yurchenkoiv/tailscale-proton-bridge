@@ -367,6 +367,9 @@ mkdir -p /var/lib/tailscale /var/run/tailscale
 rm -f /var/run/tailscale/tailscaled.sock
 
 # Guardar a rota local original antes de a VPN substituir a rota por defeito.
+. /vpn-bypass.sh
+init_vpn_bypass
+
 UNDERLAY_ROUTE=$(ip route show default | awk '$1 == "default" && $2 == "via" {print $3, $5; exit}')
 UNDERLAY_GATEWAY=${UNDERLAY_ROUTE%% *}
 UNDERLAY_DEVICE=${UNDERLAY_ROUTE#* }
@@ -601,6 +604,8 @@ if ! wait "$TS_UP_PID"; then
     exit 1
 fi
 unset TS_AUTHKEY
+configure_vpn_bypass_interface tailscale0
+refresh_vpn_bypass
 
 echo "=========================================================="
 echo "  A Bridge Proton VPN -> Tailscale Exit Node está ATIVA! "
@@ -652,6 +657,7 @@ check_vpn_connectivity() {
 }
 
 while true; do
+    refresh_vpn_bypass
     if ! kill -0 "$STATUS_WRITER_PID" 2>/dev/null; then
         echo "Erro: o escritor de telemetria parou inesperadamente. A reiniciar o container..." >&2
         write_status "false"

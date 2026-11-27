@@ -101,6 +101,7 @@ SECRET_ENV_KEYS = {"TS_AUTHKEY", "PROTONVPN_PASSWORD", "WEBUI_PASSWORD"}
 ENV_FIELDS = [
     "APP_VERSION",
     "VPN_TYPE",
+    "VPN_BYPASS_DOMAINS",
     "TS_AUTHKEY",
     "TS_HOSTNAME",
     "TS_EXTRA_ARGS",
@@ -626,6 +627,29 @@ def save():
     else:
         flash("Configuration saved. Restart both containers to apply the changes "
               "(docker compose up -d --build vpn-tailscale-bridge webui).", "success")
+    return redirect(url_for("index", skip_wizard=1))
+
+
+@app.route("/vpn-bypass/save", methods=["POST"])
+@require_auth
+def save_vpn_bypass():
+    token = request.form.get("csrf_token", "")
+    if not token or not hmac.compare_digest(token, session.get("csrf", "")):
+        abort(400, "Invalid CSRF token. Reload the page and try again.")
+
+    value = request.form.get("vpn_bypass_domains", "").strip()
+    domains = [item.strip().lower().removesuffix(".") for item in value.split(",")] if value else []
+    if len(domains) > 10 or any(
+        len(domain) > 253
+        or "." not in domain
+        or not re.search(r"[a-z]", domain.rsplit(".", 1)[-1])
+        or not all(HOSTNAME_RE.fullmatch(label) for label in domain.split("."))
+        for domain in domains
+    ):
+        flash("Enter up to 10 comma-separated hostnames, without URLs or wildcards.", "error")
+    else:
+        save_env({"VPN_BYPASS_DOMAINS": ",".join(dict.fromkeys(domains))})
+        flash("VPN exclusions saved. Recreate the bridge container to apply them.", "success")
     return redirect(url_for("index", skip_wizard=1))
 
 
