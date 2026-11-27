@@ -298,6 +298,34 @@ A site can use a different IP on the client than the bridge resolves, in which
 case its traffic follows the default. List country domains and subdomains
 individually.
 
+### Wildcard website routing
+
+In **Website routing**, add a leading wildcard such as `*.netflix.com` or
+`*.nflxvideo.net` and choose the desired WireGuard profile. A wildcard covers
+subdomains at any depth. Add the apex (for example `netflix.com`) separately
+if needed. Exact hostname rules take precedence, and the longest matching
+wildcard wins for a DNS query. The **VPN exclusions** field still accepts
+exact hostnames.
+
+To give the bridge the DNS answers it needs:
+
+1. In the [Tailscale DNS settings](https://login.tailscale.com/admin/dns),
+   add the bridge exit node's Tailscale IPv4 address as a custom nameserver.
+2. Restrict it to the wildcard domains using **Split DNS**. Enter suffixes
+   such as `netflix.com` and `nflxvideo.net` without the asterisk. Enable
+   **Use with exit node** for this nameserver. If your tailnet uses explicit
+   grants or ACLs, allow its clients to reach TCP and UDP port 53 on the bridge.
+3. Select that exit node on your client and reopen the app so it issues new
+   DNS queries. The bridge adds public IPv4 answers to the routing policy
+   before responding, using the answer's DNS TTL.
+
+The resolver is reachable through the bridge's Tailscale interfaces. No Docker
+port publish or Compose edit is needed. It forwards DNS using the container's
+configured resolvers. Cached DNS, apps using separate encrypted DNS, and
+IPv6-only destinations may prevent the bridge from learning the required IPv4
+addresses. Different wildcard targets sharing an IP use the default profile.
+Existing established flows keep their original route.
+
 ### One Tailscale exit node with two Proton WireGuard tunnels
 
 1. Keep your existing named primary exit-node profile and its profile ID. If

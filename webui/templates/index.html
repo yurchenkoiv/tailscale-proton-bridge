@@ -153,7 +153,7 @@
       {% endfor %}
     </div>
     <template id="website-routing-row">{{ routing_row() }}</template>
-    <p class="hint">Use exact hostnames, separated by commas. Direct uses the bridge host’s normal connection. Applying restarts the bridge briefly and can interrupt active connections.</p>
+    <p class="hint">Use hostnames or patterns like *.example.com, separated by commas. Wildcards require the bridge DNS resolver. Direct uses the bridge host’s normal connection. Applying restarts the bridge briefly and can interrupt active connections.</p>
     <p id="website-routing-conflicts" role="status" {% if not website_routing_conflicts %}hidden{% endif %}>
       Shared IP addresses use the default profile for new connections:
       <span>{{ website_routing_conflicts | join(', ') }}</span>

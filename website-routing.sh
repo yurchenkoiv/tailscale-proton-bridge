@@ -5,6 +5,10 @@ SITE_ROUTE_PRIORITY=890
 SITE_ROUTE_CHAIN=BRIDGE-WEBSITE
 SITE_DIRECT_ID=_direct
 declare -A SITE_MARKS SITE_DOMAINS
+declare -A SITE_DNS_SETS=()
+SITE_DNS_PORT=1053
+SITE_DNS_PID=""
+SITE_DNS_RULES=""
 SITE_ROUTING_ACTIVE=0
 SITE_CONFLICTS_JSON='[]'
 
@@ -23,7 +27,7 @@ init_website_routing() {
     local default="${VPN_ROUTING_DEFAULT:-}"
     [ -n "$default" ] || return 0
 
-    local i id entry domain target normalized gateway_route
+    local i id entry domain target normalized hostname gateway_route
     local -a rules=()
     for ((i = 0; i < PROFILE_COUNT; i++)); do
         if [ "${PROFILE_TYPES[$i]}" = wireguard ]; then
@@ -54,10 +58,11 @@ init_website_routing() {
     for entry in "${rules[@]}"; do
         domain=${entry%@*}
         target=${entry##*@}
+        hostname=${domain#\*.}
         if [[ "$entry" != *@* || ! "$target" =~ ^(_direct|[a-z0-9][a-z0-9-]{0,31})$ ]] ||
            [ -z "${SITE_MARKS[$target]:-}" ] ||
-           ! normalized=$(normalize_bypass_domains "$domain") ||
-           [ "$normalized" != "$domain" ]; then
+           ! normalized=$(normalize_bypass_domains "$hostname") ||
+           [ "$normalized" != "$hostname" ]; then
             echo "Invalid website routing rule. Use hostname@profile-id or hostname@_direct." >&2
             return 1
         fi
@@ -66,6 +71,9 @@ init_website_routing() {
             return 1
         fi
         SITE_DOMAINS["$domain"]="$target"
+        if [ "$hostname" != "$domain" ]; then
+            SITE_DNS_SETS["$target"]="bridge-site-${SITE_MARKS[$target]}"
+        fi
     done
 
     if ! iptables -t mangle -N "$SITE_ROUTE_CHAIN"; then
@@ -93,6 +101,36 @@ init_website_routing() {
         break
     done
     SITE_ROUTING_ACTIVE=1
+    [ "${#SITE_DNS_SETS[@]}" -eq 0 ] || start_website_dns
+}
+
+start_website_dns() {
+    local set domain protocol target
+    SITE_DNS_RULES=$(mktemp /tmp/bridge-website-dns.XXXXXX) || return 1
+    for set in "${SITE_DNS_SETS[@]}"; do
+        ipset create "$set" hash:ip family inet timeout 60 maxelem 4096 -exist &&
+            ipset flush "$set" || return 1
+    done
+    for domain in "${!SITE_DOMAINS[@]}"; do
+        target=${SITE_DOMAINS[$domain]}
+        printf '%s %s\n' "$domain" "${SITE_DNS_SETS[$target]:--}" >> "$SITE_DNS_RULES" || return 1
+    done
+    # Restrict the high-port listener to authenticated Tailnet interfaces.
+    for protocol in udp tcp; do
+        iptables -I INPUT -p "$protocol" --dport "$SITE_DNS_PORT" -j DROP || return 1
+    done
+    python3 /website-dns.py "$SITE_DNS_PORT" "$SITE_DNS_RULES" &
+    SITE_DNS_PID=$!
+}
+
+configure_website_dns_ingress() {
+    [ -n "$SITE_DNS_PID" ] || return 0
+    local ts_if="$1" protocol
+    for protocol in udp tcp; do
+        iptables -I INPUT -i "$ts_if" -p "$protocol" --dport "$SITE_DNS_PORT" -j ACCEPT &&
+            iptables -t nat -A PREROUTING -i "$ts_if" -m addrtype --dst-type LOCAL \
+                -p "$protocol" --dport 53 -j REDIRECT --to-ports "$SITE_DNS_PORT" || return 1
+    done
 }
 
 # Keep a terminal fallback in every policy table even when its device vanishes.
@@ -144,11 +182,14 @@ refresh_website_routing() {
     [ "$SITE_ROUTING_ACTIVE" = 1 ] || return 0
     local now domain target address answers mark conflicts=""
     local -A destinations=()
+    local first second target_mark
+    local -a dns_targets=("${!SITE_DNS_SETS[@]}")
     read -r now _ < /proc/uptime || return 1
     now=${now%%.*}
     [ "$now" -ge "${SITE_REFRESH_AT:-0}" ] || return 0
 
     for domain in "${!SITE_DOMAINS[@]}"; do
+        [[ "$domain" != \*.* ]] || continue
         target="${SITE_DOMAINS[$domain]}"
         mark="${SITE_MARKS[$target]}"
         answers=$(resolve_public_ipv4 "$domain")
@@ -171,9 +212,23 @@ refresh_website_routing() {
         printf -- '-A %s -m mark ! --mark 0/%s -j RETURN\n' "$SITE_ROUTE_CHAIN" "$SITE_ROUTE_MASK"
         for address in "${!destinations[@]}"; do
             mark="${destinations[$address]}"
-            [ "$mark" != conflict ] || continue
+            [ "$mark" != conflict ] || mark="$SITE_DEFAULT_MARK"
             printf -- '-A %s -d %s/32 -j MARK --set-xmark %s/%s\n' \
                 "$SITE_ROUTE_CHAIN" "$address" "$mark" "$SITE_ROUTE_MASK"
+        done
+        # Existing exact destinations take precedence. Shared wildcard IPs
+        # assigned to different profiles use the default, as exact conflicts do.
+        for ((first = 0; first < ${#dns_targets[@]}; first++)); do
+            for ((second = first + 1; second < ${#dns_targets[@]}; second++)); do
+                printf -- '-A %s -m mark --mark 0/%s -m set --match-set %s dst -m set --match-set %s dst -j MARK --set-xmark %s/%s\n' \
+                    "$SITE_ROUTE_CHAIN" "$SITE_ROUTE_MASK" "${SITE_DNS_SETS[${dns_targets[$first]}]}" \
+                    "${SITE_DNS_SETS[${dns_targets[$second]}]}" "$SITE_DEFAULT_MARK" "$SITE_ROUTE_MASK"
+            done
+        done
+        for target in "${dns_targets[@]}"; do
+            target_mark=${SITE_MARKS[$target]}
+            printf -- '-A %s -m mark --mark 0/%s -m set --match-set %s dst -j MARK --set-xmark %s/%s\n' \
+                "$SITE_ROUTE_CHAIN" "$SITE_ROUTE_MASK" "${SITE_DNS_SETS[$target]}" "$target_mark" "$SITE_ROUTE_MASK"
         done
         printf -- '-A %s -m mark --mark 0/%s -j MARK --set-xmark %s/%s\n' \
             "$SITE_ROUTE_CHAIN" "$SITE_ROUTE_MASK" "$SITE_DEFAULT_MARK" "$SITE_ROUTE_MASK"

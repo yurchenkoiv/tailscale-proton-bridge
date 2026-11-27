@@ -548,7 +548,7 @@ def is_exit_node_profile(profile):
     )
 
 
-def parse_routing_hostnames(value, limit):
+def parse_routing_hostnames(value, limit, *, allow_wildcards=False):
     if not value.strip():
         return []
     domains = [entry.strip().lower().removesuffix(".") for entry in value.split(",")]
@@ -557,8 +557,10 @@ def parse_routing_hostnames(value, limit):
         or "." not in domain
         or not re.search(r"[a-z]", domain.rsplit(".", 1)[-1])
         or not all(HOSTNAME_RE.fullmatch(label) for label in domain.split("."))
-        for domain in domains
+        for domain in (name.removeprefix("*.") if allow_wildcards else name for name in domains)
     ):
+        if allow_wildcards:
+            raise ValueError("Use DNS hostnames or *.example.com patterns without URLs.")
         raise ValueError("Use exact DNS hostnames without URLs or wildcards.")
     return list(dict.fromkeys(domains))
 
@@ -794,7 +796,7 @@ def save_website_routing():
                 continue
             if target not in profiles and target != "_direct":
                 raise ValueError("Choose a WireGuard profile or Direct for every rule.")
-            for domain in parse_routing_hostnames(value, 20):
+            for domain in parse_routing_hostnames(value, 20, allow_wildcards=True):
                 if domain in rules and rules[domain] != target:
                     raise ValueError(f"{domain} already has a different connection.")
                 rules[domain] = target

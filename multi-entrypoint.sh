@@ -200,6 +200,11 @@ profile_mode() {
 cleanup() {
     local i
     trap - TERM INT EXIT
+    if [ -n "${SITE_DNS_PID:-}" ]; then
+        kill -TERM "$SITE_DNS_PID" 2>/dev/null || true
+        wait "$SITE_DNS_PID" 2>/dev/null || true
+    fi
+    [ -z "${SITE_DNS_RULES:-}" ] || rm -f "$SITE_DNS_RULES"
     [ -n "$TELEMETRY_PID" ] && kill -TERM "$TELEMETRY_PID" 2>/dev/null || true
     for ((i = 0; i < PROFILE_COUNT; i++)); do
         if [ -n "${TS_PIDS[$i]:-}" ]; then
@@ -327,7 +332,8 @@ configure_profile_firewall() {
     local vpn_if="${VPN_INTERFACES[$i]}"
     local mark="${PROFILE_TABLES[$i]}"
     if [ "$SITE_ROUTING_ACTIVE" = 1 ]; then
-        configure_website_ingress "$ts_if" "$mark" || exit 1
+        configure_website_ingress "$ts_if" "$mark" &&
+            configure_website_dns_ingress "$ts_if" || exit 1
         PROFILE_FIREWALL_CONFIGURED[$i]=1
         APPLIED_ROUTING_REVISION="$ROUTING_REVISION"
         return 0
@@ -601,6 +607,10 @@ while true; do
     fi
     refresh_vpn_bypass || exit 1
     refresh_website_routing || exit 1
+    if [ -n "$SITE_DNS_PID" ] && ! kill -0 "$SITE_DNS_PID" 2>/dev/null; then
+        echo "Website routing DNS resolver stopped; restarting the bridge" >&2
+        exit 1
+    fi
     process_pending_profiles
     if ! has_active_profile; then
         echo "No connected profile or pending authentication remains; restarting the container" >&2

@@ -28,7 +28,7 @@ def test_tailscale_underlay_bypasses_vpn_only_for_its_udp_port():
 def test_compose_does_not_force_an_apparmor_profile_by_default():
     compose = (PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
-    assert "${BRIDGE_SECURITY_OPT:-no-new-privileges:true}" in compose
+    assert "${BRIDGE_SECURITY_OPT:-no-new-privileges=true}" in compose
     assert "apparmor=${" not in compose
 
 
@@ -130,18 +130,15 @@ def test_vpn_health_probes_try_several_urls_in_both_entrypoints():
 def test_multi_profile_local_probes_are_pinned_to_their_tunnel():
     supervisor = (PROJECT_ROOT / "multi-entrypoint.sh").read_text(encoding="utf-8")
 
-    # IP%iface binds the source address and pins the device, so a probe can
+    # ifhost binds the source address and pins the device, so a probe can
     # only succeed over the profile's own tunnel.
-    assert 'curl --interface "${ip}%${iface}"' in supervisor
-    # Verified on the shipped image (Alpine 3.23, curl 8.22.0/musl):
-    # --interface <IPv4>%<iface> binds address+device and returns rc=0,
-    # while a device-only --interface %<iface> fails with curl (45).
+    assert 'curl --interface "ifhost!${iface}!${ip}"' in supervisor
     assert 'vpn_probe "${PROFILE_PROBE_IPS[$i]}" "${VPN_INTERFACES[$i]}"' in supervisor
     # Proton repeats the same tunnel address for every profile, so the probe
     # route is keyed by output interface, not by source address.
     assert 'ip rule add oif "$vpn_if" table "$table" pref "$((3000 + i))"' in supervisor
     assert 'ip rule add from' not in supervisor
     # The probe route install is verified, and the rule is removed on cleanup.
-    assert "could not install the probe route" in supervisor
+    assert 'if ! configure_profile_probe "$i"; then' in supervisor
     assert 'ip rule del pref "$((3000 + i))"' in supervisor
     assert '{ [ -n "${PROFILE_PROBE_IPS[$i]:-}" ] && ! vpn_probe' in supervisor
