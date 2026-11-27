@@ -300,31 +300,61 @@ individually.
 
 ### Wildcard website routing
 
-In **Website routing**, add a leading wildcard such as `*.netflix.com` or
-`*.nflxvideo.net` and choose the desired WireGuard profile. A wildcard covers
-subdomains at any depth. Add the apex (for example `netflix.com`) separately
-if needed. Exact hostname rules take precedence, and the longest matching
-wildcard wins for a DNS query. The **VPN exclusions** field still accepts
-exact hostnames.
+A rule such as `*.netflix.com` covers subdomains at any depth. Add the apex
+(`netflix.com`) separately if needed. Exact hostname rules take precedence, and
+the longest matching wildcard wins for a DNS query. **VPN exclusions** still
+accepts exact hostnames.
 
-To give the bridge the DNS answers it needs:
+#### Set an independent DNS upstream
 
-1. In the [Tailscale DNS settings](https://login.tailscale.com/admin/dns),
-   add the bridge exit node's Tailscale IPv4 address as a custom nameserver.
-2. Restrict it to the wildcard domains using **Split DNS**. Enter suffixes
-   such as `netflix.com` and `nflxvideo.net` without the asterisk. Enable
-   **Use with exit node** for this nameserver. If your tailnet uses explicit
-   grants or ACLs, allow its clients to reach TCP and UDP port 53 on the bridge.
-3. Select that exit node on your client and reopen the app so it issues new
-   DNS queries. The bridge adds public IPv4 answers to the routing policy
-   before responding, using the answer's DNS TTL.
+If the Docker host uses Tailscale DNS, Docker's embedded resolver can forward a
+Netflix query back to the bridge's own split DNS listener. This can produce
+`SERVFAIL` even when ordinary domains resolve. Use the included
+`compose.wildcard-dns.yml` override to give just the bridge an explicit upstream
+(`1.1.1.1` by default):
 
-The resolver is reachable through the bridge's Tailscale interfaces. No Docker
-port publish or Compose edit is needed. It forwards DNS using the container's
-configured resolvers. Cached DNS, apps using separate encrypted DNS, and
-IPv6-only destinations may prevent the bridge from learning the required IPv4
-addresses. Different wildcard targets sharing an IP use the default profile.
-Existing established flows keep their original route.
+```bash
+docker compose -f docker-compose.yml -f compose.wildcard-dns.yml \
+  up -d --build --force-recreate vpn-tailscale-bridge webui
+```
+
+Use both Compose files each time you recreate the bridge. If you already use
+your own DNS override, use that file in place of `compose.wildcard-dns.yml`.
+The bridge's DNS listener is reachable through its Tailscale interfaces and
+requires no published Docker ports.
+
+#### Route Netflix through a WireGuard profile
+
+1. In **Website routing**, keep your usual default profile. Add
+   `*.netflix.com` and `*.nflxvideo.net` as separate rules targeting your
+   secondary profile, such as **Ukraine**. Add `netflix.com` as an exact rule
+   for the apex if desired. Click **Save and apply routing** and wait for it
+   to complete.
+2. In [Tailscale DNS settings](https://login.tailscale.com/admin/dns), select
+   **Add nameserver → Custom** and enter the primary exit node's Tailscale
+   IPv4 address. Choose **Restrict to domain** and enter `netflix.com`.
+   Enable **Use with exit node**. Repeat for `nflxvideo.net` using the same IP.
+   Enter the domain suffixes without `*.`. Split DNS does not require
+   **Override DNS servers**. If your tailnet uses explicit grants or ACLs,
+   allow clients to reach TCP and UDP port 53 on the bridge.
+3. From a tailnet device, verify the resolver using your exit node's actual
+   Tailscale IP:
+
+   ```bash
+   EXIT_NODE_IP=100.x.y.z  # Replace with the primary exit node's Tailscale IPv4
+   dig @"$EXIT_NODE_IP" ios27.appboot.netflix.com A
+   ```
+
+   A successful query returns `NOERROR` and IPv4 answers. If it times out or
+   returns `SERVFAIL`, check that the bridge was recreated with the DNS
+   override and that TCP and UDP port 53 are reachable over Tailscale.
+4. On your iPhone, select the primary exit node, fully close Netflix, then
+   reopen it and start playback. The bridge learns public IPv4 destinations
+   from fresh DNS answers and expires them using their DNS TTL.
+
+Cached DNS, apps using their own encrypted DNS, and IPv6-only destinations may
+prevent wildcard learning. Different wildcard targets sharing an IP use the
+default profile. Existing flows keep their original route.
 
 ### One Tailscale exit node with two Proton WireGuard tunnels
 
