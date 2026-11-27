@@ -1,0 +1,4 @@
+services:
+  vpn-tailscale-bridge:
+    dns:
+      - 1.1.1.1
