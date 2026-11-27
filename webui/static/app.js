@@ -130,6 +130,12 @@
   }
 
   function applyStatus(data) {
+    var routingConflicts = document.getElementById("website-routing-conflicts");
+    if (routingConflicts) {
+      var addresses = data.website_routing_conflicts || [];
+      routingConflicts.querySelector("span").textContent = addresses.join(", ");
+      routingConflicts.hidden = addresses.length === 0;
+    }
     var connected = !!data.connected;
     var panel = document.getElementById("schematic-panel");
     if (panel) panel.classList.toggle("connected", connected);
@@ -474,7 +480,34 @@
     window.setInterval(refresh, 300000);
   }
 
+  function initWebsiteRouting() {
+    var rules = document.getElementById("website-routing-rules");
+    var template = document.getElementById("website-routing-row");
+    var add = document.getElementById("website-routing-add");
+    if (!rules || !template || !add) return;
+
+    function updateAddButton() {
+      add.disabled = rules.children.length >= 20;
+    }
+    add.addEventListener("click", function () {
+      var row = template.content.cloneNode(true);
+      var input = row.querySelector("input");
+      rules.appendChild(row);
+      input.focus();
+      updateAddButton();
+    });
+    rules.addEventListener("click", function (event) {
+      var button = event.target.closest("[data-remove-routing-rule]");
+      if (!button) return;
+      button.closest(".website-routing-row").remove();
+      updateAddButton();
+      add.focus();
+    });
+    updateAddButton();
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
+    initWebsiteRouting();
   initStatusPolling();
   initVpnTypeToggle();
   initDropzones();

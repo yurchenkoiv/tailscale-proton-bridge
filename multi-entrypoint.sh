@@ -129,7 +129,7 @@ write_status() {
                 "${PROFILE_IDS[$i]}" "$name" "${PROFILE_TYPES[$i]}" "${VPN_INTERFACES[$i]}" "${TS_INTERFACES[$i]}" \
                 "$([ "$state" = connected ] && echo true || echo false)" "$ip" "$host" "$auth" "$state"
         done
-        printf '],"last_updated":"%s"}\n' "$now"
+        printf '],"website_routing_conflicts":%s,"last_updated":"%s"}\n' "${SITE_CONFLICTS_JSON:-[]}" "$now"
     } > "$status_tmp"
     chmod 0644 "$status_tmp"
     mv -f "$status_tmp" "$STATUS_FILE"
@@ -272,6 +272,7 @@ activate_profile() {
     ip route replace default dev "$vpn_if" table "$table"
     ip rule add iif "$ts_if" table "$table" pref "$((1000 + i))" 2>/dev/null || true
     ip rule add fwmark "$table" table "$table" pref "$((2000 + i))" 2>/dev/null || true
+    set_website_tunnel_state "$i" connected || exit 1
     PROFILE_STATES[$i]="connected"
     PROFILE_AUTH_URLS[$i]=""
 
@@ -300,6 +301,11 @@ configure_profile_firewall() {
     local ts_if="${TS_INTERFACES[$i]}"
     local vpn_if="${VPN_INTERFACES[$i]}"
     local mark="${PROFILE_TABLES[$i]}"
+    if [ "$SITE_ROUTING_ACTIVE" = 1 ]; then
+        configure_website_ingress "$ts_if" "$mark" || exit 1
+        PROFILE_FIREWALL_CONFIGURED[$i]=1
+        return 0
+    fi
     iptables -t mangle -A PREROUTING -i "$ts_if" -m conntrack --ctstate NEW -j CONNMARK --set-mark "$mark"
     iptables -t mangle -A PREROUTING -j CONNMARK --restore-mark
     iptables -t mangle -A OUTPUT -j CONNMARK --restore-mark
@@ -366,9 +372,23 @@ if ! ip6tables -F FORWARD || ! ip6tables -P FORWARD DROP; then
     exit 1
 fi
 
+# shellcheck source=/dev/null
 . /vpn-bypass.sh
-init_vpn_bypass || exit 1
-refresh_vpn_bypass || exit 1
+# shellcheck source=/dev/null
+. /website-routing.sh
+init_website_routing || exit 1
+if [ "$SITE_ROUTING_ACTIVE" = 1 ]; then
+    # Replies restore the ingress table only. The website classifier on
+    # Tailnet ingress separately restores the connection's egress mark.
+    iptables -t mangle -A PREROUTING -j CONNMARK --restore-mark \
+        --nfmask "$SITE_INGRESS_MASK" --ctmask "$SITE_INGRESS_MASK" || exit 1
+    iptables -t mangle -A OUTPUT -j CONNMARK --restore-mark \
+        --nfmask "$SITE_INGRESS_MASK" --ctmask "$SITE_INGRESS_MASK" || exit 1
+    refresh_website_routing || exit 1
+else
+    init_vpn_bypass || exit 1
+    refresh_vpn_bypass || exit 1
+fi
 
 for ((i = 0; i < PROFILE_COUNT; i++)); do
     profile_id="${PROFILE_IDS[$i]}"
@@ -516,6 +536,7 @@ TELEMETRY_PID=$!
 
 while true; do
     refresh_vpn_bypass || exit 1
+    refresh_website_routing || exit 1
     process_pending_profiles
     if ! has_active_profile; then
         echo "No connected profile or pending authentication remains; restarting the container" >&2
@@ -528,12 +549,23 @@ while true; do
            ! ip addr show dev "${VPN_INTERFACES[$i]}" 2>/dev/null | grep -q 'inet ' || \
            { [ -n "${PROFILE_PROBE_IPS[$i]:-}" ] && ! vpn_probe "${PROFILE_PROBE_IPS[$i]}" "${VPN_INTERFACES[$i]}"; }; then
             PROFILE_FAILURES[$i]=$((PROFILE_FAILURES[$i] + 1))
+            set_website_tunnel_state "$i" degraded || exit 1
             PROFILE_STATES[$i]="degraded"
             if [ "${PROFILE_FAILURES[$i]}" -ge "$VPN_FAILURE_THRESHOLD" ]; then
+                # In website routing mode, an intact WireGuard interface can
+                # recover on its own while other profiles continue to serve.
+                if [ "$SITE_ROUTING_ACTIVE" = 1 ] && [ "${PROFILE_TYPES[$i]}" = wireguard ] &&
+                   kill -0 "${TS_PIDS[$i]}" 2>/dev/null &&
+                   ip addr show dev "${VPN_INTERFACES[$i]}" 2>/dev/null | grep -q 'inet '; then
+                    continue
+                fi
                 echo "Profile ${PROFILE_IDS[$i]} failed its health checks; restarting the container" >&2
                 exit 1
             fi
         else
+            if [ "${PROFILE_STATES[$i]}" = degraded ]; then
+                set_website_tunnel_state "$i" connected || exit 1
+            fi
             PROFILE_FAILURES[$i]=0
             PROFILE_STATES[$i]="connected"
         fi

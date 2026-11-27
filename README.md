@@ -237,6 +237,33 @@ monitor loop nor the Docker healthcheck (20s timeout) stalls on dead
 endpoints. In multi-profile mode each profile's tunnel is verified instead
 by probing through the profile's own interface.
 
+### Website routing across WireGuard profiles
+
+Add and connect your Proton WireGuard profiles in the dashboard. Under **Website
+routing**, choose a **Default Proton profile**, add rules to send specific
+hostnames through another profile or **Direct**, and save. Recreate the bridge
+with `docker compose up -d --build vpn-tailscale-bridge webui`. Select any of the
+bridge's exit nodes in Tailscale. The same rules apply whichever node you select.
+
+For example, choose USA as the default, route `example.org` through Ukraine, and
+set `vinted.com,www.vinted.com` to Direct. Existing **VPN exclusions** also act
+as Direct rules. You can configure the same settings in `.env`:
+
+```dotenv
+VPN_ROUTING_DEFAULT=usa
+VPN_ROUTING_RULES=example.org@ukraine,vinted.com@_direct,www.vinted.com@_direct
+```
+
+Use profile IDs (the directory names under `vpn/profiles`), and up to 20
+hostnames in the routing rules. Clear the default to turn off website routing.
+Public IPv4 addresses are refreshed from the bridge's DNS. If different rules
+share an address, the dashboard shows the conflict and new connections use
+the default profile. Existing connections keep their original egress for the
+life of the connection. Traffic assigned to an unavailable tunnel is dropped.
+A site can use a different IP on the client than the bridge resolves, in which
+case its traffic follows the default. List country domains and subdomains
+individually.
+
 ### VPN exclusions
 
 In the dashboard under **VPN exclusions**, enter up to 10 exact hostnames, such as

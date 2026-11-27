@@ -136,6 +136,11 @@ if [ "${MULTI_PROFILE_ENABLED:-1}" != "0" ]; then
     done
 fi
 
+if [ -n "${VPN_ROUTING_DEFAULT:-}" ]; then
+    echo "Website routing requires multi-profile mode and a configured WireGuard profile" >&2
+    exit 1
+fi
+
 # Função de limpeza para encerramento gracioso
 cleanup() {
     echo "Sinal de paragem recebido. A encerrar serviços..."
@@ -367,6 +372,7 @@ mkdir -p /var/lib/tailscale /var/run/tailscale
 rm -f /var/run/tailscale/tailscaled.sock
 
 # Guardar a rota local original antes de a VPN substituir a rota por defeito.
+# shellcheck source=/dev/null
 . /vpn-bypass.sh
 init_vpn_bypass
 
