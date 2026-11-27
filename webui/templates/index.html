@@ -96,6 +96,62 @@
   </form>
 </div>
 
+{% macro routing_row(hostnames="", target="") %}
+  <div class="grid two website-routing-row">
+    <label>Hostnames
+      <input type="text" name="routing_hostnames" value="{{ hostnames }}" placeholder="example.org,www.example.org">
+    </label>
+    <label>Connection
+      <select name="routing_target">
+        <option value="_direct" {% if target == '_direct' %}selected{% endif %}>Direct</option>
+        {% for profile in website_routing_profiles %}
+          <option value="{{ profile.id }}" {% if target == profile.id %}selected{% endif %}>{{ profile.name }}</option>
+        {% endfor %}
+        {% if target and target != '_direct' and target not in website_routing_profiles | map(attribute='id') | list %}
+          <option value="{{ target }}" selected>{{ target }} (unavailable)</option>
+        {% endif %}
+      </select>
+    </label>
+    <div><button type="button" data-remove-routing-rule class="btn ghost">Remove rule</button></div>
+  </div>
+{% endmacro %}
+
+<div class="panel">
+  <h2>Website routing</h2>
+  <p class="lede">Use one Tailscale exit node and choose which Proton WireGuard profile handles each website.</p>
+  <form method="post" action="{{ url_for('save_website_routing') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="routing-default">Default Proton profile</label>
+    <select id="routing-default" name="routing_default">
+      <option value="">Website routing off</option>
+      {% for profile in website_routing_profiles %}
+        <option value="{{ profile.id }}" {% if env.VPN_ROUTING_DEFAULT == profile.id %}selected{% endif %}>{{ profile.name }}</option>
+      {% endfor %}
+      {% if env.VPN_ROUTING_DEFAULT and env.VPN_ROUTING_DEFAULT not in website_routing_profiles | map(attribute='id') | list %}
+        <option value="{{ env.VPN_ROUTING_DEFAULT }}" selected>{{ env.VPN_ROUTING_DEFAULT }} (unavailable)</option>
+      {% endif %}
+    </select>
+    {% if not website_routing_profiles %}
+      <p class="hint">Add a WireGuard profile above to enable website routing.</p>
+    {% endif %}
+    <div id="website-routing-rules">
+      {% for hostnames, target in website_routing_rules %}
+        {{ routing_row(hostnames, target) }}
+      {% endfor %}
+    </div>
+    <template id="website-routing-row">{{ routing_row() }}</template>
+    <p class="hint">Use exact hostnames, separated by commas. Direct uses the bridge host’s normal connection. Recreate the bridge container after saving.</p>
+    <p id="website-routing-conflicts" role="status" {% if not website_routing_conflicts %}hidden{% endif %}>
+      Shared IP addresses use the default profile for new connections:
+      <span>{{ website_routing_conflicts | join(', ') }}</span>
+    </p>
+    <div class="actions">
+      <button type="button" id="website-routing-add" class="btn ghost">Add rule</button>
+      <button type="submit" class="btn">Save website routing</button>
+    </div>
+  </form>
+</div>
+
 <div class="panel">
   <h2>VPN exclusions</h2>
   <form method="post" action="{{ url_for('save_vpn_bypass') }}">
@@ -103,7 +159,7 @@
     <label for="vpn-bypass-domains">Hostnames</label>
     <input type="text" id="vpn-bypass-domains" name="vpn_bypass_domains"
            value="{{ env.VPN_BYPASS_DOMAINS }}" placeholder="vinted.com,www.vinted.com">
-    <p class="hint">Separate hostnames with commas. Applies to every exit node after recreating the bridge container. Leave blank to clear exclusions.</p>
+    <p class="hint">Separate hostnames with commas. These destinations also use Direct when website routing is enabled. Leave blank to clear exclusions.</p>
     <button type="submit" class="btn">Save exclusions</button>
   </form>
 </div>

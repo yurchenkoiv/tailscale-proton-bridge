@@ -102,6 +102,7 @@ ENV_FIELDS = [
     "APP_VERSION",
     "VPN_TYPE",
     "VPN_BYPASS_DOMAINS",
+    "VPN_ROUTING_DEFAULT",
     "TS_AUTHKEY",
     "TS_HOSTNAME",
     "TS_EXTRA_ARGS",
@@ -470,6 +471,42 @@ def files_present_state():
     }
 
 
+def website_routing_rules(env_values):
+    rules = []
+    for entry in env_values.get("VPN_ROUTING_RULES", "").split(","):
+        domain, separator, target = entry.partition("@")
+        if separator and domain and target:
+            rules.append((domain, target))
+    return rules
+
+
+def profile_used_for_website_routing(env_values, profile_id):
+    default = env_values.get("VPN_ROUTING_DEFAULT")
+    return bool(default) and (
+        profile_id == default
+        or any(target == profile_id for _, target in website_routing_rules(env_values))
+    )
+
+
+def is_wireguard_profile(profile):
+    return profile["wireguard"] and profile["vpn_type"] in ("auto", "wireguard")
+
+
+def parse_routing_hostnames(value, limit):
+    if not value.strip():
+        return []
+    domains = [entry.strip().lower().removesuffix(".") for entry in value.split(",")]
+    if len(domains) > limit or any(
+        len(domain) > 253
+        or "." not in domain
+        or not re.search(r"[a-z]", domain.rsplit(".", 1)[-1])
+        or not all(HOSTNAME_RE.fullmatch(label) for label in domain.split("."))
+        for domain in domains
+    ):
+        raise ValueError("Use exact DNS hostnames without URLs or wildcards.")
+    return list(dict.fromkeys(domains))
+
+
 def build_context(env_values, files_present):
     csrf_token = secrets.token_hex(16)
     session["csrf"] = csrf_token
@@ -482,12 +519,16 @@ def build_context(env_values, files_present):
             display_values[key] = env_values.get(key, "")
 
     secrets_set = {key: bool(env_values.get(key)) for key in SECRET_ENV_KEYS}
+    profiles = list_profiles()
 
     return {
         "env": display_values,
         "secrets_set": secrets_set,
         "files_present": files_present,
-        "profiles": list_profiles(),
+        "profiles": profiles,
+        "website_routing_profiles": [profile for profile in profiles if is_wireguard_profile(profile)],
+        "website_routing_rules": website_routing_rules(env_values),
+        "website_routing_conflicts": read_status().get("website_routing_conflicts", []),
         "csrf_token": csrf_token,
         "vpn_type": env_values.get("VPN_TYPE", "auto"),
         "ts_hostname": env_values.get("TS_HOSTNAME", ""),
@@ -637,19 +678,65 @@ def save_vpn_bypass():
     if not token or not hmac.compare_digest(token, session.get("csrf", "")):
         abort(400, "Invalid CSRF token. Reload the page and try again.")
 
-    value = request.form.get("vpn_bypass_domains", "").strip()
-    domains = [item.strip().lower().removesuffix(".") for item in value.split(",")] if value else []
-    if len(domains) > 10 or any(
-        len(domain) > 253
-        or "." not in domain
-        or not re.search(r"[a-z]", domain.rsplit(".", 1)[-1])
-        or not all(HOSTNAME_RE.fullmatch(label) for label in domain.split("."))
-        for domain in domains
-    ):
+    try:
+        domains = parse_routing_hostnames(request.form.get("vpn_bypass_domains", ""), 10)
+    except ValueError:
         flash("Enter up to 10 comma-separated hostnames, without URLs or wildcards.", "error")
+        return redirect(url_for("index", skip_wizard=1))
+
+    env_values = load_env()
+    if env_values.get("VPN_ROUTING_DEFAULT") and any(
+        domain in domains and target != "_direct"
+        for domain, target in website_routing_rules(env_values)
+    ):
+        flash("A hostname in the exclusions already targets a WireGuard profile. Edit its website routing rule first.", "error")
+        return redirect(url_for("index", skip_wizard=1))
+    save_env({"VPN_BYPASS_DOMAINS": ",".join(domains)})
+    flash("VPN exclusions saved. Recreate the bridge container to apply them.", "success")
+    return redirect(url_for("index", skip_wizard=1))
+
+
+@app.route("/website-routing/save", methods=["POST"])
+@require_auth
+def save_website_routing():
+    token = request.form.get("csrf_token", "")
+    if not token or not hmac.compare_digest(token, session.get("csrf", "")):
+        abort(400, "Invalid CSRF token. Reload the page and try again.")
+
+    default = request.form.get("routing_default", "").strip()
+    hostnames = request.form.getlist("routing_hostnames")
+    targets = request.form.getlist("routing_target")
+
+    try:
+        profiles = {profile["id"] for profile in list_profiles() if is_wireguard_profile(profile)}
+        if default and default not in profiles:
+            raise ValueError("Choose an available WireGuard profile for the default connection.")
+        if len(hostnames) != len(targets) or len(hostnames) > 20:
+            raise ValueError("Enter up to 20 website routing rules.")
+        rules = {}
+        for value, target in zip(hostnames, targets):
+            if not value.strip():
+                continue
+            if target not in profiles and target != "_direct":
+                raise ValueError("Choose a WireGuard profile or Direct for every rule.")
+            for domain in parse_routing_hostnames(value, 20):
+                if domain in rules and rules[domain] != target:
+                    raise ValueError(f"{domain} already has a different connection.")
+                rules[domain] = target
+        if len(rules) > 20:
+            raise ValueError("Enter up to 20 hostnames across all website routing rules.")
+        if default:
+            exclusions = parse_routing_hostnames(load_env().get("VPN_BYPASS_DOMAINS", ""), 10)
+            if any(domain in rules and rules[domain] != "_direct" for domain in exclusions):
+                raise ValueError("A hostname already uses Direct in VPN exclusions. Clear that exclusion first.")
+    except ValueError as error:
+        flash(str(error), "error")
     else:
-        save_env({"VPN_BYPASS_DOMAINS": ",".join(dict.fromkeys(domains))})
-        flash("VPN exclusions saved. Recreate the bridge container to apply them.", "success")
+        save_env({
+            "VPN_ROUTING_DEFAULT": default,
+            "VPN_ROUTING_RULES": ",".join(f"{domain}@{target}" for domain, target in rules.items()),
+        })
+        flash("Website routing saved. Recreate the bridge container to apply it.", "success")
     return redirect(url_for("index", skip_wizard=1))
 
 
@@ -692,6 +779,10 @@ def save_profile():
             abort(400, "Invalid profile value.")
 
     directory = profile_path(profile_id)
+    env_values = load_env()
+    if vpn_type == "openvpn" and profile_used_for_website_routing(env_values, profile_id):
+        flash("Remove this profile from Website routing before changing it to OpenVPN.", "error")
+        return redirect(url_for("index", skip_wizard=1))
     os.makedirs(directory, mode=0o700, exist_ok=True)
     try:
         os.chmod(directory, 0o700)
@@ -738,6 +829,9 @@ def delete_profile():
     directory = profile_path(profile_id)
     if not os.path.isdir(directory):
         flash("Profile not found.", "error")
+        return redirect(url_for("index", skip_wizard=1))
+    if profile_used_for_website_routing(load_env(), profile_id):
+        flash("Remove this profile from Website routing before deleting it.", "error")
         return redirect(url_for("index", skip_wizard=1))
     shutil.rmtree(directory)
     flash(f"Profile '{profile_id}' removed. Restart the bridge to remove its exit node.", "success")

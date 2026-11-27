@@ -4,21 +4,8 @@ BYPASS_PRIORITY=900
 BYPASS_SET=bridge-vpn-bypass
 BYPASS_NEXT_SET=bridge-vpn-bypass-next
 
-init_vpn_bypass() {
-    [ -n "${VPN_BYPASS_DOMAINS:-}" ] || return 0
-
-    # Capture Docker's original gateway before either VPN changes routing.
-    local route
-    route=$(ip -4 route show default | awk '$1 == "default" && $2 == "via" {print $3, $5; exit}')
-    BYPASS_GATEWAY=${route%% *}
-    BYPASS_DEVICE=${route#* }
-    if [ -z "$BYPASS_GATEWAY" ] || [ -z "$BYPASS_DEVICE" ]; then
-        echo "VPN_BYPASS_DOMAINS requires an IPv4 default gateway" >&2
-        return 1
-    fi
-
-    # Validate and normalize the comma-separated list without shell globbing.
-    BYPASS_DOMAINS=$(printf '%s\n' "$VPN_BYPASS_DOMAINS" | awk -F, '
+normalize_bypass_domains() {
+    printf '%s\n' "$1" | awk -F, '
         {
             for (i = 1; i <= NF; i++) {
                 domain = tolower($i)
@@ -34,7 +21,45 @@ init_vpn_bypass() {
                 print domain
             }
         }
-    ') || {
+    '
+}
+
+resolve_public_ipv4() {
+    local answers
+    answers=$(dig +time=1 +tries=1 +noall +answer A "$1.") || answers=""
+    # Never install routes for private, shared, link-local or reserved IPv4 space.
+    printf '%s\n' "$answers" | awk '
+        $4 == "A" {
+            split($5, octet, ".")
+            a = octet[1]; b = octet[2]; c = octet[3]
+            if (a == 0 || a == 10 || a == 127 || a >= 224 ||
+                (a == 100 && b >= 64 && b <= 127) ||
+                (a == 169 && b == 254) ||
+                (a == 172 && b >= 16 && b <= 31) ||
+                (a == 192 && (b == 168 || (b == 0 && (c == 0 || c == 2)) || (b == 88 && c == 99))) ||
+                (a == 198 && (b == 18 || b == 19 || (b == 51 && c == 100))) ||
+                (a == 203 && b == 0 && c == 113))
+                next
+            print $5
+        }
+    '
+}
+
+init_vpn_bypass() {
+    [ -n "${VPN_BYPASS_DOMAINS:-}" ] || return 0
+
+    # Capture Docker's original gateway before either VPN changes routing.
+    local route
+    route=$(ip -4 route show default | awk '$1 == "default" && $2 == "via" {print $3, $5; exit}')
+    BYPASS_GATEWAY=${route%% *}
+    BYPASS_DEVICE=${route#* }
+    if [ -z "$BYPASS_GATEWAY" ] || [ -z "$BYPASS_DEVICE" ]; then
+        echo "VPN_BYPASS_DOMAINS requires an IPv4 default gateway" >&2
+        return 1
+    fi
+
+    # Validate and normalize the comma-separated list without shell globbing.
+    BYPASS_DOMAINS=$(normalize_bypass_domains "$VPN_BYPASS_DOMAINS") || {
         echo "VPN_BYPASS_DOMAINS must contain up to 10 comma-separated DNS hostnames" >&2
         return 1
     }
@@ -71,23 +96,7 @@ refresh_vpn_bypass() {
 
     addresses=""
     for domain in $BYPASS_DOMAINS; do
-        answers=$(dig +time=1 +tries=1 +noall +answer A "$domain.") || answers=""
-        # Never install routes for private, shared, link-local or reserved IPv4 space.
-        answers=$(printf '%s\n' "$answers" | awk '
-            $4 == "A" {
-                split($5, octet, ".")
-                a = octet[1]; b = octet[2]; c = octet[3]
-                if (a == 0 || a == 10 || a == 127 || a >= 224 ||
-                    (a == 100 && b >= 64 && b <= 127) ||
-                    (a == 169 && b == 254) ||
-                    (a == 172 && b >= 16 && b <= 31) ||
-                    (a == 192 && (b == 168 || (b == 0 && (c == 0 || c == 2)) || (b == 88 && c == 99))) ||
-                    (a == 198 && (b == 18 || b == 19 || (b == 51 && c == 100))) ||
-                    (a == 203 && b == 0 && c == 113))
-                    next
-                print $5
-            }
-        ')
+        answers=$(resolve_public_ipv4 "$domain")
         if [ -z "$answers" ]; then
             echo "VPN bypass: no public IPv4 DNS answers for $domain" >&2
         fi
