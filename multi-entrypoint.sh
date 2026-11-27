@@ -30,7 +30,9 @@ mkdir -p "$STATUS_DIR" /var/lib/tailscale /var/run/tailscale /tmp
 declare -a PROFILE_IDS PROFILE_NAMES PROFILE_TYPES PROFILE_HOSTNAMES PROFILE_EXTRAS
 declare -a VPN_INTERFACES TS_INTERFACES TS_SOCKETS TS_PIDS VPN_PIDS
 declare -a PROFILE_STATES PROFILE_AUTH_URLS PROFILE_FAILURES PROFILE_TABLES PROFILE_UP_PIDS PROFILE_FIREWALL_CONFIGURED
-declare -a PROFILE_PROBE_IPS
+declare -a PROFILE_PROBE_IPS PROFILE_ROUTING_ONLY
+# shellcheck source=/dev/null
+. /routing-settings.sh
 PROFILE_COUNT=0
 TELEMETRY_PID=""
 
@@ -99,6 +101,7 @@ write_status() {
     local primary_ip="" primary_host="" primary_vpn_interface="" primary_auth_url=""
     local status_tmp="${STATUS_FILE}.tmp.$$"
     for ((i = 0; i < PROFILE_COUNT; i++)); do
+        [ "${PROFILE_ROUTING_ONLY[$i]}" = false ] || continue
         if [ "${PROFILE_STATES[$i]}" = "connected" ]; then
             connected=true
             if [ -z "$primary_host" ]; then
@@ -119,14 +122,14 @@ write_status() {
             [ "$i" -gt 0 ] && printf ','
             state="${PROFILE_STATES[$i]}"
             ip=""
-            if [ "$state" = "connected" ]; then
+            if [ "$state" = "connected" ] && [ "${PROFILE_ROUTING_ONLY[$i]}" = false ]; then
                 ip=$(tailscale --socket="${TS_SOCKETS[$i]}" ip -4 2>/dev/null | head -n1 || true)
             fi
             name=$(json_escape "${PROFILE_NAMES[$i]}")
             host=$(json_escape "${PROFILE_HOSTNAMES[$i]}")
             auth=$(json_escape "${PROFILE_AUTH_URLS[$i]}")
-            printf '{"id":"%s","name":"%s","vpn_mode":"%s","vpn_interface":"%s","tailscale_interface":"%s","connected":%s,"tailscale_ip":"%s","hostname":"%s","auth_url":"%s","state":"%s"}' \
-                "${PROFILE_IDS[$i]}" "$name" "${PROFILE_TYPES[$i]}" "${VPN_INTERFACES[$i]}" "${TS_INTERFACES[$i]}" \
+            printf '{"id":"%s","name":"%s","vpn_mode":"%s","vpn_interface":"%s","tailscale_interface":"%s","routing_only":%s,"connected":%s,"tailscale_ip":"%s","hostname":"%s","auth_url":"%s","state":"%s"}' \
+                "${PROFILE_IDS[$i]}" "$name" "${PROFILE_TYPES[$i]}" "${VPN_INTERFACES[$i]}" "${TS_INTERFACES[$i]}" "${PROFILE_ROUTING_ONLY[$i]}" \
                 "$([ "$state" = connected ] && echo true || echo false)" "$ip" "$host" "$auth" "$state"
         done
         printf '],"website_routing_conflicts":%s,"routing_revision":"%s","last_updated":"%s"}\n' \
@@ -199,7 +202,14 @@ cleanup() {
     trap - TERM INT EXIT
     [ -n "$TELEMETRY_PID" ] && kill -TERM "$TELEMETRY_PID" 2>/dev/null || true
     for ((i = 0; i < PROFILE_COUNT; i++)); do
-        [ -n "${TS_PIDS[$i]:-}" ] && kill -TERM "${TS_PIDS[$i]}" 2>/dev/null || true
+        if [ -n "${TS_PIDS[$i]:-}" ]; then
+            if profile_is_routing_only "$PROFILE_ROOT/${PROFILE_IDS[$i]}/profile.env"; then
+                if ! timeout 5 tailscale --socket="${TS_SOCKETS[$i]}" set --advertise-exit-node=false; then
+                    echo "Could not withdraw ${PROFILE_IDS[$i]}; remove its old device from Tailscale Machines" >&2
+                fi
+            fi
+            kill -TERM "${TS_PIDS[$i]}" 2>/dev/null || true
+        fi
         [ -n "${VPN_PIDS[$i]:-}" ] && kill -TERM "${VPN_PIDS[$i]}" 2>/dev/null || true
         [ -n "${PROFILE_UP_PIDS[$i]:-}" ] && kill -TERM "${PROFILE_UP_PIDS[$i]}" 2>/dev/null || true
         if [ "${PROFILE_TYPES[$i]}" = wireguard ]; then
@@ -238,12 +248,25 @@ for metadata in "$PROFILE_ROOT"/*/profile.env; do
     PROFILE_IDS[$PROFILE_COUNT]="$profile_id"
     PROFILE_NAMES[$PROFILE_COUNT]="$(metadata_value "$metadata" NAME)"
     PROFILE_TYPES[$PROFILE_COUNT]="$mode"
-    PROFILE_HOSTNAMES[$PROFILE_COUNT]="$(metadata_value "$metadata" TS_HOSTNAME)"
-    [ -n "${PROFILE_HOSTNAMES[$PROFILE_COUNT]}" ] || PROFILE_HOSTNAMES[$PROFILE_COUNT]="protonvpn-$profile_id"
-    PROFILE_EXTRAS[$PROFILE_COUNT]="$(metadata_value "$metadata" TS_EXTRA_ARGS)"
+    PROFILE_ROUTING_ONLY[$PROFILE_COUNT]=false
+    PROFILE_HOSTNAMES[$PROFILE_COUNT]=""
+    PROFILE_EXTRAS[$PROFILE_COUNT]=""
+    TS_INTERFACES[$PROFILE_COUNT]=""
+    TS_SOCKETS[$PROFILE_COUNT]=""
+    if profile_is_routing_only "$metadata"; then
+        PROFILE_ROUTING_ONLY[$PROFILE_COUNT]=true
+        if [ "$mode" != wireguard ]; then
+            echo "Skipping $profile_id: routing-only profiles require WireGuard" >&2
+            continue
+        fi
+    else
+        PROFILE_HOSTNAMES[$PROFILE_COUNT]="$(metadata_value "$metadata" TS_HOSTNAME)"
+        [ -n "${PROFILE_HOSTNAMES[$PROFILE_COUNT]}" ] || PROFILE_HOSTNAMES[$PROFILE_COUNT]="protonvpn-$profile_id"
+        PROFILE_EXTRAS[$PROFILE_COUNT]="$(metadata_value "$metadata" TS_EXTRA_ARGS)"
+        TS_INTERFACES[$PROFILE_COUNT]="ts${PROFILE_COUNT}"
+        TS_SOCKETS[$PROFILE_COUNT]="/var/run/tailscale/${profile_id}.sock"
+    fi
     VPN_INTERFACES[$PROFILE_COUNT]="vpn${PROFILE_COUNT}"
-    TS_INTERFACES[$PROFILE_COUNT]="ts${PROFILE_COUNT}"
-    TS_SOCKETS[$PROFILE_COUNT]="/var/run/tailscale/${profile_id}.sock"
     PROFILE_STATES[$PROFILE_COUNT]="starting"
     PROFILE_AUTH_URLS[$PROFILE_COUNT]=""
     PROFILE_FAILURES[$PROFILE_COUNT]=0
@@ -270,32 +293,33 @@ activate_profile() {
     local table="${PROFILE_TABLES[$i]}"
 
     ip route replace "100.64.0.0/10" dev "$ts_if" table "$table"
-    ip route replace default dev "$vpn_if" table "$table"
     ip rule add iif "$ts_if" table "$table" pref "$((1000 + i))" 2>/dev/null || true
     ip rule add fwmark "$table" table "$table" pref "$((2000 + i))" 2>/dev/null || true
     set_website_tunnel_state "$i" connected || exit 1
     PROFILE_STATES[$i]="connected"
     PROFILE_AUTH_URLS[$i]=""
 
-    # Give the container's own probe a route through this profile's table.
-    # Proton repeats the same tunnel address (10.2.0.2) for every profile, so
-    # a source-address rule cannot tell profiles apart. The probe binds its
-    # source address AND the device (curl IP%iface), and an oif-keyed rule
-    # matches exactly the flows pinned to that interface.
-    local probe_ip=""
-    probe_ip=$(ip -4 -o addr show dev "$vpn_if" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)
+    configure_profile_probe "$i" || echo "Profile ${PROFILE_IDS[$i]}: could not configure the VPN probe" >&2
+}
+
+configure_profile_probe() {
+    local i="$1" vpn_if table probe_ip
+    vpn_if="${VPN_INTERFACES[$i]}"
+    table="${PROFILE_TABLES[$i]}"
     PROFILE_PROBE_IPS[$i]=""
-    if [ -z "$probe_ip" ]; then
-        echo "Profile ${PROFILE_IDS[$i]}: no tunnel address found; the HTTP probe is disabled for this profile" >&2
-    elif ! ip rule add oif "$vpn_if" table "$table" pref "$((3000 + i))"; then
-        echo "Profile ${PROFILE_IDS[$i]}: could not install the probe route; the HTTP probe is disabled for this profile" >&2
-    else
-        PROFILE_PROBE_IPS[$i]="$probe_ip"
-    fi
+    ip route replace default dev "$vpn_if" table "$table" || return 1
+
+    # Proton tunnels can share a source address. Match probes by their bound
+    # output interface so each profile is tested through its own tunnel.
+    probe_ip=$(ip -4 -o addr show dev "$vpn_if" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)
+    [ -n "$probe_ip" ] || return 1
+    ip rule add oif "$vpn_if" table "$table" pref "$((3000 + i))" || return 1
+    PROFILE_PROBE_IPS[$i]="$probe_ip"
 }
 
 configure_profile_firewall() {
     local i="$1"
+    [ "${PROFILE_ROUTING_ONLY[$i]}" = false ] || return 0
     [ "${PROFILE_FIREWALL_CONFIGURED[$i]:-0}" = 1 ] && return 0
     [ "${PROFILE_STATES[$i]}" = connected ] || return 0
 
@@ -345,6 +369,7 @@ process_pending_profiles() {
 has_active_profile() {
     local i
     for ((i = 0; i < PROFILE_COUNT; i++)); do
+        [ "${PROFILE_ROUTING_ONLY[$i]}" = false ] || continue
         if [ "${PROFILE_STATES[$i]}" = connected ] || [ "${PROFILE_STATES[$i]}" = degraded ]; then
             return 0
         fi
@@ -375,8 +400,6 @@ if ! ip6tables -F FORWARD || ! ip6tables -P FORWARD DROP; then
     exit 1
 fi
 
-# shellcheck source=/dev/null
-. /routing-settings.sh
 if ! load_routing_settings; then
     echo "Could not read website routing settings" >&2
     exit 1
@@ -468,6 +491,24 @@ for ((i = 0; i < PROFILE_COUNT; i++)); do
         continue
     fi
 
+    if [ "${PROFILE_ROUTING_ONLY[$i]}" = true ]; then
+        if ! configure_profile_probe "$i"; then
+            PROFILE_STATES[$i]="error"
+        elif vpn_probe "${PROFILE_PROBE_IPS[$i]}" "$vpn_if"; then
+            set_website_tunnel_state "$i" connected || exit 1
+            PROFILE_STATES[$i]="connected"
+        else
+            PROFILE_STATES[$i]="degraded"
+        fi
+        write_status
+        continue
+    fi
+
+    if profile_is_routing_only "$directory/profile.env"; then
+        # Metadata changed while this profile was starting. Reload it before
+        # creating or registering a Tailscale device.
+        exit 0
+    fi
     state_dir="/var/lib/tailscale/profiles/$profile_id"
     mkdir -p "$state_dir"
     rm -f "${TS_SOCKETS[$i]}"
@@ -544,6 +585,16 @@ telemetry_writer &
 TELEMETRY_PID=$!
 
 while true; do
+    for ((i = 0; i < PROFILE_COUNT; i++)); do
+        configured_routing_only=false
+        if profile_is_routing_only "$PROFILE_ROOT/${PROFILE_IDS[$i]}/profile.env"; then
+            configured_routing_only=true
+        fi
+        if [ "$configured_routing_only" != "${PROFILE_ROUTING_ONLY[$i]}" ]; then
+            echo "Applying updated profile role for ${PROFILE_IDS[$i]}"
+            exit 0
+        fi
+    done
     if routing_apply_requested; then
         echo "Applying updated routing settings by restarting the bridge"
         exit 0
@@ -557,13 +608,15 @@ while true; do
     fi
     for ((i = 0; i < PROFILE_COUNT; i++)); do
         [ "${PROFILE_STATES[$i]}" = connected ] || [ "${PROFILE_STATES[$i]}" = degraded ] || continue
-        if ! kill -0 "${TS_PIDS[$i]}" 2>/dev/null || \
+        if { [ "${PROFILE_ROUTING_ONLY[$i]}" = false ] && ! kill -0 "${TS_PIDS[$i]}" 2>/dev/null; } || \
            { [ "${PROFILE_TYPES[$i]}" = openvpn ] && ! kill -0 "${VPN_PIDS[$i]}" 2>/dev/null; } || \
            ! ip addr show dev "${VPN_INTERFACES[$i]}" 2>/dev/null | grep -q 'inet ' || \
            { [ -n "${PROFILE_PROBE_IPS[$i]:-}" ] && ! vpn_probe "${PROFILE_PROBE_IPS[$i]}" "${VPN_INTERFACES[$i]}"; }; then
             PROFILE_FAILURES[$i]=$((PROFILE_FAILURES[$i] + 1))
             set_website_tunnel_state "$i" degraded || exit 1
             PROFILE_STATES[$i]="degraded"
+            # Keep the primary exit node available when only an egress tunnel fails.
+            [ "${PROFILE_ROUTING_ONLY[$i]}" = false ] || continue
             if [ "${PROFILE_FAILURES[$i]}" -ge "$VPN_FAILURE_THRESHOLD" ]; then
                 # In website routing mode, an intact WireGuard interface can
                 # recover on its own while other profiles continue to serve.

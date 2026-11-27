@@ -486,6 +486,26 @@
     window.setInterval(refresh, 300000);
   }
 
+  function initRoutingOnlyProfiles() {
+    document.querySelectorAll('input[name="profile_routing_only"]').forEach(function (toggle) {
+      var form = toggle.form;
+      var protocol = form.elements.profile_vpn_type;
+      var hostname = form.elements.profile_hostname;
+      function updateFields() {
+        if (toggle.checked) protocol.value = "wireguard";
+        protocol.disabled = toggle.checked;
+        hostname.required = !toggle.checked;
+        ["profile_hostname", "profile_ts_extra_args", "profile_ts_authkey",
+          "profile_ovpn_conf", "profile_ovpn_creds", "profile_protonvpn_user",
+          "profile_protonvpn_password"].forEach(function (name) {
+          form.elements[name].disabled = toggle.checked;
+        });
+      }
+      toggle.addEventListener("change", updateFields);
+      updateFields();
+    });
+  }
+
   function initWebsiteRouting() {
     var rules = document.getElementById("website-routing-rules");
     var template = document.getElementById("website-routing-row");
@@ -513,6 +533,7 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
+    initRoutingOnlyProfiles();
     initWebsiteRouting();
   initStatusPolling();
   initVpnTypeToggle();

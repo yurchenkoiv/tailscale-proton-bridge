@@ -3,8 +3,8 @@
 {% block content %}
 
 <div class="panel profiles-panel">
-  <h2>Exit node profiles</h2>
-  <p class="lede">Each profile becomes a separate Tailscale exit node. Save the profile, then restart the bridge.</p>
+  <h2>VPN profiles</h2>
+  <p class="lede">An exit-node profile registers with Tailscale. A routing-only WireGuard profile serves as an egress for Website routing.</p>
 
   {% for profile in profiles %}
   <form class="profile-card" method="post" action="{{ url_for('save_profile') }}" enctype="multipart/form-data">
@@ -13,13 +13,17 @@
     <div class="profile-heading">
       <div>
         <h3>{{ profile.name }}</h3>
-        <span class="profile-id">{{ profile.id }}</span>
+        <span class="profile-id">{{ profile.id }}{% if profile.routing_only %} · Routing only{% endif %}</span>
       </div>
       <span class="profile-state {{ 'state-ok' if profile.status.connected else 'state-off' }}">
         {{ 'Connected' if profile.status.connected else (profile.status.state or 'Not running') }}
       </span>
     </div>
 
+    <label class="checkbox-label"><input type="checkbox" name="profile_routing_only" value="1" {% if profile.routing_only %}checked{% endif %}> Routing only</label>
+    {% if profile.routing_only %}
+      <p class="hint">If this profile previously registered a device, open <a href="https://login.tailscale.com/admin/machines">Tailscale Machines</a>, find the old device, and select <strong>Remove</strong>.</p>
+    {% endif %}
     <div class="profile-fields">
       <div>
         <label>Display name</label>
@@ -35,7 +39,7 @@
       </div>
       <div>
         <label>Tailscale hostname</label>
-        <input type="text" name="profile_hostname" value="{{ profile.ts_hostname }}" required>
+        <input type="text" name="profile_hostname" value="{{ profile.ts_hostname }}" {% if not profile.routing_only %}required{% endif %}>
       </div>
       <div>
         <label>Extra Tailscale arguments</label>
@@ -75,6 +79,8 @@
   <form class="profile-card profile-new" method="post" action="{{ url_for('save_profile') }}" enctype="multipart/form-data">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <h3>Add profile</h3>
+    <label class="checkbox-label"><input type="checkbox" name="profile_routing_only" value="1"> Routing only</label>
+    <p class="hint">Routing-only profiles require a WireGuard .conf file. They do not need a Tailscale hostname or auth key.</p>
     <div class="profile-fields">
       <div><label>Profile id <span class="hint">lowercase, numbers, hyphens</span></label><input type="text" name="profile_id" pattern="[a-z0-9](?:[a-z0-9-]{0,29}[a-z0-9])?" required></div>
       <div><label>Display name</label><input type="text" name="profile_name" placeholder="Portugal" required></div>

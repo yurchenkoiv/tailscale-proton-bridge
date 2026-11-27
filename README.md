@@ -160,24 +160,32 @@ port, for example `http://<host-ip>:8080`:
 1. **Authentication**: Uses HTTP Basic Auth (`WEBUI_USERNAME` and `WEBUI_PASSWORD`). `WEBUI_PASSWORD` must be set before starting the Web UI.
 2. **First Run Wizard**: Automatically launches a 4-step wizard with drag-and-drop file upload for `.conf` or `.ovpn` files.
 3. **Manual Login Link**: If no `TS_AUTHKEY` is provided, a clickable login link appears dynamically in the header.
-4. **Apply Changes**: Because the Web UI does not access the Docker socket for security reasons, apply saved modifications by recreating both services:
+4. **Apply changes**: Use **Save and apply** for Website routing and VPN exclusions. To apply other changes that affect container configuration, recreate the services:
    ```bash
    docker compose up -d --build vpn-tailscale-bridge webui
    ```
 
 ### Multiple exit nodes and locations
 
-The Web UI can create multiple Proton VPN profiles in the same bridge. Each profile has its own VPN file, Tailscale identity, hostname, VPN interface, and routing table. After restarting the bridge, the profiles appear in Tailscale as separate exit nodes. Users select the desired location in their Tailscale client.
+The Web UI can create multiple Proton VPN profiles in the same bridge. Exit-node
+profiles have their own Tailscale identity, hostname, and VPN interface.
+A WireGuard profile with **Routing only** enabled provides a VPN interface
+and routing table for Website routing. It uses no Tailscale identity or device
+slot. Profiles without this setting continue to advertise as exit nodes.
 
-Use **Add profile**, upload the Proton WireGuard or OpenVPN file, and provide a reusable Tailscale auth key. Apply the change with:
+To add an exit node, use **Add profile**, upload the Proton WireGuard or
+OpenVPN file, and provide a reusable Tailscale auth key. Restart the bridge to
+load profile changes:
 
 ```bash
-docker compose up -d --build vpn-tailscale-bridge webui
+docker compose restart vpn-tailscale-bridge
 ```
 
-Profiles are stored under `./vpn/profiles/<id>/`. Each profile is a separate Tailscale device and counts toward the tailnet device limit. Multi-profile mode is enabled by default. Set `MULTI_PROFILE_ENABLED=0` to keep using the legacy single-profile configuration.
+Profiles are stored under `./vpn/profiles/<id>/`. Only exit-node profiles count
+toward the tailnet device limit. Multi-profile mode is enabled by default.
+Set `MULTI_PROFILE_ENABLED=0` to keep using the legacy single-profile configuration.
 
-When at least one valid profile exists, the legacy files under `./vpn/wireguard`, `./vpn/openvpn`, and the legacy VPN values in `.env` are ignored by the bridge.
+When at least one valid exit-node profile exists, the legacy files under `./vpn/wireguard`, `./vpn/openvpn`, and the legacy VPN values in `.env` are ignored by the bridge.
 The dashboard also shows the number of devices with active forwarded sessions through the exit node. This count comes from the bridge's connection tracking table, so it represents devices observed recently by the data plane, not every device that has selected the exit node while idle.
 5. **Updates**: The dashboard reads the latest stable GitHub release, shows an alert when one is available, and offers one-click installation. Enable automatic updates and choose a local host time for the daily check. The updater installs the release and rebuilds the application services.
 
@@ -271,6 +279,53 @@ life of the connection. Traffic assigned to an unavailable tunnel is dropped.
 A site can use a different IP on the client than the bridge resolves, in which
 case its traffic follows the default. List country domains and subdomains
 individually.
+
+### One Tailscale exit node with two Proton WireGuard tunnels
+
+1. Keep your existing named primary exit-node profile and its profile ID. If
+   setting up fresh, add a WireGuard profile called **USA** and leave **Routing
+   only** unchecked. Approve this device as an exit node in Tailscale Machines.
+2. Add a **Ukraine** profile, enable **Routing only**, and upload the Ukraine
+   Proton WireGuard `.conf`. Leave the Tailscale hostname and auth key unset.
+   Restart the bridge to load the new tunnel, or continue to the next step and
+   apply a changed routing configuration to trigger that restart.
+3. Under **Website routing**, select **USA** as the default. Add hostnames
+   such as `example.org` with **Ukraine** as the target, and keep
+   `core.vinted.com` set to **Direct** here or in **VPN exclusions**. Click
+   **Save and apply routing** and wait for the dashboard confirmation.
+4. On your iPhone, select the **USA** exit node and leave it selected. You can
+   also set **Ukraine** as the default without changing which exit node is
+   selected on the phone.
+
+If you convert an existing exit-node profile, the running bridge tries to
+withdraw its advertisement before restarting. To remove its old device record,
+open [Tailscale Machines](https://login.tailscale.com/admin/machines), locate the
+old device, and select **Remove**. Keep your primary device and its persistent
+Tailscale state volume. A standalone legacy install can keep using its existing
+setup. This example uses a named exit-node profile in multi-profile mode.
+
+To install the updated code once, run
+`docker compose up -d --build vpn-tailscale-bridge webui`. No Compose or volume
+changes are required. Subsequent website routing and exclusions changes use
+**Save and apply** in the dashboard.
+
+#### Verify the routes
+
+- In Tailscale Machines, confirm the primary device retains its existing
+  Tailscale IP and only the primary registers. In the dashboard, both VPN
+  profiles should be connected. The routing-only profile has no Tailscale IP.
+- With the same exit node selected on the iPhone, load three distinct IPv4
+  IP-echo hostnames with separate DNS addresses. For example, leave
+  `api.ipify.org` unmatched, temporarily route `checkip.amazonaws.com` through
+  Ukraine, and temporarily route `ifconfig.me` through Direct. Use
+  `https://ifconfig.me/ip` for the Direct check. Compare the results with the
+  public IPs you get from each Proton connection and the bridge host's regular
+  Internet connection. Keep `core.vinted.com` in the Direct rules.
+- To verify fail-closed, temporarily take the secondary WireGuard interface
+  down on the bridge. The test hostname assigned to Ukraine should fail on a
+  new connection. Repeat the default and Direct checks to confirm they still
+  reach their expected public IPs. Bring the secondary interface back up and
+  wait for its dashboard state to recover.
 
 ### VPN exclusions
 

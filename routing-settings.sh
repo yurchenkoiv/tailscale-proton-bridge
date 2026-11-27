@@ -2,6 +2,10 @@
 ROUTING_SETTINGS_PATH="${PROFILE_ROOT:-/etc/bridge-profiles}/.website-routing.env"
 ROUTING_REVISION=
 
+profile_is_routing_only() {
+    grep -qx 'ROUTING_ONLY=1' "$1" 2>/dev/null
+}
+
 load_routing_settings() {
     [ -e "$ROUTING_SETTINGS_PATH" ] || return 0
 
