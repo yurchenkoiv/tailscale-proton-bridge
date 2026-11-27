@@ -514,7 +514,7 @@ for ((i = 0; i < PROFILE_COUNT; i++)); do
     rm -f "${TS_SOCKETS[$i]}"
     tailscaled --state="$state_dir/tailscaled.state" --socket="${TS_SOCKETS[$i]}" \
         --statedir="$state_dir" --tun="$ts_if" --port="$((41641 + i))" \
-        --netfilter-mode=off >/tmp/bridge-"${profile_id}"-tailscale.log 2>&1 &
+        >/tmp/bridge-"${profile_id}"-tailscale.log 2>&1 &
     TS_PIDS[$i]=$!
     wait_count=0
     while [ "$wait_count" -lt 30 ]; do
