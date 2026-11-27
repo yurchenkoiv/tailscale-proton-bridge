@@ -168,10 +168,10 @@ read_secret() {
 
 vpn_probe() {
     local ip="$1" iface="$2" url
-    # IP%iface binds the source address and pins the device, so the probe can
+    # Bind the source address and pin the device so the probe can
     # only succeed if this profile's tunnel actually forwards the traffic.
     for url in $VPN_HEALTHCHECK_URLS; do
-        if curl --interface "${ip}%${iface}" --fail --silent --show-error \
+        if curl --interface "ifhost!${iface}!${ip}" --fail --silent --show-error \
             --max-time "$probe_max_time" "$url" >/dev/null 2>&1; then
             return 0
         fi
