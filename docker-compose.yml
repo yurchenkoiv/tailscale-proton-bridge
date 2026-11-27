@@ -14,16 +14,17 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
-      # Opção extra opcional, p. ex. BRIDGE_SECURITY_OPT=apparmor=unconfined em
-      # Docker-in-LXC (Proxmox). O valor por defeito repete a opção acima para
-      # não forçar nenhum perfil AppArmor em hosts sem AppArmor.
-      - ${BRIDGE_SECURITY_OPT:-no-new-privileges:true}
+      # Keep the AppArmor override optional without adding a duplicate YAML item.
+      # Docker accepts both ':' and '=' for security options.
+      - ${BRIDGE_SECURITY_OPT:-no-new-privileges=true}
     devices:
       - /dev/net/tun:/dev/net/tun
     sysctls:
       # Pré-definidos aqui como reforço; o entrypoint também os define via sysctl -w
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
+      # Website routing can return VPN traffic through a different Tailscale profile.
+      - net.ipv4.conf.all.rp_filter=2
       # Tailscale checks both forwarding sysctls for exit nodes.
       # IPv6 traffic remains disabled and blocked to avoid VPN leaks.
       # Tailscale checks both forwarding sysctls when a node advertises an exit node.
@@ -73,6 +74,8 @@ services:
       # sai pela rede local, permitindo ligações diretas em vez de relays DERP.
       - TS_PORT=${TS_PORT:-41641}
       - TS_DIRECT_UNDERLAY=${TS_DIRECT_UNDERLAY:-1}
+      - VPN_ROUTING_DEFAULT=${VPN_ROUTING_DEFAULT:-}
+      - VPN_ROUTING_RULES=${VPN_ROUTING_RULES:-}
       - VPN_BYPASS_DOMAINS=${VPN_BYPASS_DOMAINS:-}
       - MULTI_PROFILE_ENABLED=${MULTI_PROFILE_ENABLED:-1}
 
