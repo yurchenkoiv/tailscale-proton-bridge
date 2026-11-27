@@ -129,7 +129,8 @@ write_status() {
                 "${PROFILE_IDS[$i]}" "$name" "${PROFILE_TYPES[$i]}" "${VPN_INTERFACES[$i]}" "${TS_INTERFACES[$i]}" \
                 "$([ "$state" = connected ] && echo true || echo false)" "$ip" "$host" "$auth" "$state"
         done
-        printf '],"website_routing_conflicts":%s,"last_updated":"%s"}\n' "${SITE_CONFLICTS_JSON:-[]}" "$now"
+        printf '],"website_routing_conflicts":%s,"routing_revision":"%s","last_updated":"%s"}\n' \
+            "${SITE_CONFLICTS_JSON:-[]}" "${APPLIED_ROUTING_REVISION:-}" "$now"
     } > "$status_tmp"
     chmod 0644 "$status_tmp"
     mv -f "$status_tmp" "$STATUS_FILE"
@@ -304,6 +305,7 @@ configure_profile_firewall() {
     if [ "$SITE_ROUTING_ACTIVE" = 1 ]; then
         configure_website_ingress "$ts_if" "$mark" || exit 1
         PROFILE_FIREWALL_CONFIGURED[$i]=1
+        APPLIED_ROUTING_REVISION="$ROUTING_REVISION"
         return 0
     fi
     iptables -t mangle -A PREROUTING -i "$ts_if" -m conntrack --ctstate NEW -j CONNMARK --set-mark "$mark"
@@ -314,6 +316,7 @@ configure_profile_firewall() {
     iptables -t nat -A POSTROUTING -o "$vpn_if" -j MASQUERADE
     configure_vpn_bypass_interface "$ts_if" || exit 1
     PROFILE_FIREWALL_CONFIGURED[$i]=1
+    APPLIED_ROUTING_REVISION="$ROUTING_REVISION"
 }
 
 process_pending_profiles() {
@@ -372,6 +375,12 @@ if ! ip6tables -F FORWARD || ! ip6tables -P FORWARD DROP; then
     exit 1
 fi
 
+# shellcheck source=/dev/null
+. /routing-settings.sh
+if ! load_routing_settings; then
+    echo "Could not read website routing settings" >&2
+    exit 1
+fi
 # shellcheck source=/dev/null
 . /vpn-bypass.sh
 # shellcheck source=/dev/null
@@ -535,6 +544,10 @@ telemetry_writer &
 TELEMETRY_PID=$!
 
 while true; do
+    if routing_apply_requested; then
+        echo "Applying updated routing settings by restarting the bridge"
+        exit 0
+    fi
     refresh_vpn_bypass || exit 1
     refresh_website_routing || exit 1
     process_pending_profiles
