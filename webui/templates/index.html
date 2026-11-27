@@ -118,6 +118,11 @@
 
 <div class="panel">
   <h2>Website routing</h2>
+  {% if routing_revision %}
+    <p id="routing-apply-status" data-revision="{{ routing_revision }}" role="status">
+      {{ 'Routing settings applied.' if routing_revision == applied_routing_revision else 'Waiting for the bridge to apply routing settings.' }}
+    </p>
+  {% endif %}
   <p class="lede">Use one Tailscale exit node and choose which Proton WireGuard profile handles each website.</p>
   <form method="post" action="{{ url_for('save_website_routing') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -131,7 +136,9 @@
         <option value="{{ env.VPN_ROUTING_DEFAULT }}" selected>{{ env.VPN_ROUTING_DEFAULT }} (unavailable)</option>
       {% endif %}
     </select>
-    {% if not website_routing_profiles %}
+    {% if not multi_profile_enabled %}
+      <p class="hint">Enable multi-profile mode to use website routing.</p>
+    {% elif not website_routing_profiles %}
       <p class="hint">Add a WireGuard profile above to enable website routing.</p>
     {% endif %}
     <div id="website-routing-rules">
@@ -140,14 +147,14 @@
       {% endfor %}
     </div>
     <template id="website-routing-row">{{ routing_row() }}</template>
-    <p class="hint">Use exact hostnames, separated by commas. Direct uses the bridge host’s normal connection. Recreate the bridge container after saving.</p>
+    <p class="hint">Use exact hostnames, separated by commas. Direct uses the bridge host’s normal connection. Applying restarts the bridge briefly and can interrupt active connections.</p>
     <p id="website-routing-conflicts" role="status" {% if not website_routing_conflicts %}hidden{% endif %}>
       Shared IP addresses use the default profile for new connections:
       <span>{{ website_routing_conflicts | join(', ') }}</span>
     </p>
     <div class="actions">
       <button type="button" id="website-routing-add" class="btn ghost">Add rule</button>
-      <button type="submit" class="btn">Save website routing</button>
+      <button type="submit" class="btn">Save and apply routing</button>
     </div>
   </form>
 </div>
@@ -160,7 +167,7 @@
     <input type="text" id="vpn-bypass-domains" name="vpn_bypass_domains"
            value="{{ env.VPN_BYPASS_DOMAINS }}" placeholder="vinted.com,www.vinted.com">
     <p class="hint">Separate hostnames with commas. These destinations also use Direct when website routing is enabled. Leave blank to clear exclusions.</p>
-    <button type="submit" class="btn">Save exclusions</button>
+    <button type="submit" class="btn">Save and apply exclusions</button>
   </form>
 </div>
 

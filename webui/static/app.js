@@ -130,6 +130,12 @@
   }
 
   function applyStatus(data) {
+    var routingStatus = document.getElementById("routing-apply-status");
+    if (routingStatus) {
+      routingStatus.textContent = data.routing_revision === routingStatus.dataset.revision
+        ? "Routing settings applied."
+        : "Waiting for the bridge to apply routing settings.";
+    }
     var routingConflicts = document.getElementById("website-routing-conflicts");
     if (routingConflicts) {
       var addresses = data.website_routing_conflicts || [];

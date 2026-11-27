@@ -5,6 +5,7 @@ Lets users edit the project's .env file and upload VPN configuration files
 (WireGuard/OpenVPN) without SSH access to the host. Update requests are handed
 to the isolated updater service through a shared state directory.
 """
+import fcntl
 import hmac
 import json
 import os
@@ -27,6 +28,8 @@ VPN_DIR = os.environ.get("VPN_DIR", "/data/vpn")
 WG_DIR = os.path.join(VPN_DIR, "wireguard")
 OVPN_DIR = os.path.join(VPN_DIR, "openvpn")
 PROFILES_DIR = os.path.join(VPN_DIR, "profiles")
+ROUTING_SETTINGS_NAME = ".website-routing.env"
+ROUTING_KEYS = ("VPN_BYPASS_DOMAINS", "VPN_ROUTING_DEFAULT", "VPN_ROUTING_RULES")
 STATUS_FILE = os.environ.get("STATUS_FILE", "/var/run/bridge-status/status.json")
 TRAFFIC_FILE = os.environ.get("TRAFFIC_FILE", "/var/run/bridge-status/traffic.json")
 UPDATE_STATE_PATH = os.environ.get("UPDATE_STATE_PATH", "/data/update-state/state.json")
@@ -471,6 +474,51 @@ def files_present_state():
     }
 
 
+def routing_settings(env_values):
+    settings = {key: os.environ.get(key, env_values.get(key, "")) for key in ROUTING_KEYS}
+    try:
+        with open(os.path.join(PROFILES_DIR, ROUTING_SETTINGS_NAME), encoding="utf-8") as file:
+            lines = file.read().splitlines()
+    except FileNotFoundError:
+        return settings
+    expected_keys = ("ROUTING_REVISION", *ROUTING_KEYS)
+    values = dict(line.split("=", 1) for line in lines if "=" in line)
+    if len(lines) != len(expected_keys) or tuple(values) != expected_keys or not re.fullmatch(
+        r"[0-9a-f]{32}", values.get("ROUTING_REVISION", "")
+    ):
+        raise ValueError("The saved routing settings file is invalid.")
+    return values
+
+
+def apply_routing_settings(updates):
+    # Both forms replace a full snapshot. Lock the directory so parallel
+    # submissions preserve one another's fields and validate the combined state.
+    os.makedirs(PROFILES_DIR, exist_ok=True)
+    directory_fd = os.open(PROFILES_DIR, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(directory_fd, fcntl.LOCK_EX)
+        current = routing_settings(load_env())
+        settings = {**current, **updates}
+        exclusions = parse_routing_hostnames(settings["VPN_BYPASS_DOMAINS"], 10)
+        if settings["VPN_ROUTING_DEFAULT"] and any(
+            domain in exclusions and target != "_direct"
+            for domain, target in website_routing_rules(settings)
+        ):
+            raise ValueError("A hostname has both a Direct exclusion and a WireGuard rule. Clear one of them first.")
+        settings["VPN_BYPASS_DOMAINS"] = ",".join(exclusions)
+        if all(settings[key] == current[key] for key in ROUTING_KEYS):
+            # Do not disconnect clients for a submission that changes nothing.
+            return False
+        revision = secrets.token_hex(16)
+        content = f"ROUTING_REVISION={revision}\n" + "".join(
+            f"{key}={settings[key]}\n" for key in ROUTING_KEYS
+        )
+        save_private_file(os.path.join(PROFILES_DIR, ROUTING_SETTINGS_NAME), content)
+        return True
+    finally:
+        os.close(directory_fd)
+
+
 def website_routing_rules(env_values):
     rules = []
     for entry in env_values.get("VPN_ROUTING_RULES", "").split(","):
@@ -511,6 +559,11 @@ def build_context(env_values, files_present):
     csrf_token = secrets.token_hex(16)
     session["csrf"] = csrf_token
 
+    try:
+        env_values = {**env_values, **routing_settings(env_values)}
+    except (OSError, ValueError):
+        flash("Could not read saved routing settings.", "error")
+
     display_values = {}
     for key in ENV_FIELDS:
         if key in SECRET_ENV_KEYS:
@@ -520,6 +573,7 @@ def build_context(env_values, files_present):
 
     secrets_set = {key: bool(env_values.get(key)) for key in SECRET_ENV_KEYS}
     profiles = list_profiles()
+    status = read_status()
 
     return {
         "env": display_values,
@@ -528,7 +582,10 @@ def build_context(env_values, files_present):
         "profiles": profiles,
         "website_routing_profiles": [profile for profile in profiles if is_wireguard_profile(profile)],
         "website_routing_rules": website_routing_rules(env_values),
-        "website_routing_conflicts": read_status().get("website_routing_conflicts", []),
+        "website_routing_conflicts": status.get("website_routing_conflicts", []),
+        "multi_profile_enabled": os.environ.get("MULTI_PROFILE_ENABLED", "1") != "0",
+        "routing_revision": env_values.get("ROUTING_REVISION", ""),
+        "applied_routing_revision": status.get("routing_revision", ""),
         "csrf_token": csrf_token,
         "vpn_type": env_values.get("VPN_TYPE", "auto"),
         "ts_hostname": env_values.get("TS_HOSTNAME", ""),
@@ -684,16 +741,21 @@ def save_vpn_bypass():
         flash("Enter up to 10 comma-separated hostnames, without URLs or wildcards.", "error")
         return redirect(url_for("index", skip_wizard=1))
 
-    env_values = load_env()
-    if env_values.get("VPN_ROUTING_DEFAULT") and any(
-        domain in domains and target != "_direct"
-        for domain, target in website_routing_rules(env_values)
-    ):
-        flash("A hostname in the exclusions already targets a WireGuard profile. Edit its website routing rule first.", "error")
-        return redirect(url_for("index", skip_wizard=1))
-    save_env({"VPN_BYPASS_DOMAINS": ",".join(domains)})
-    flash("VPN exclusions saved. Recreate the bridge container to apply them.", "success")
+    queue_routing_settings({"VPN_BYPASS_DOMAINS": ",".join(domains)})
     return redirect(url_for("index", skip_wizard=1))
+
+
+def queue_routing_settings(updates):
+    try:
+        changed = apply_routing_settings(updates)
+    except ValueError as error:
+        flash(str(error), "error")
+    except OSError:
+        app.logger.exception("Unable to write routing settings")
+        flash("Could not save routing settings. Check the permissions on the profiles directory.", "error")
+    else:
+        message = "Routing saved. The bridge will restart to apply it." if changed else "No routing changes to apply."
+        flash(message, "success")
 
 
 @app.route("/website-routing/save", methods=["POST"])
@@ -709,6 +771,8 @@ def save_website_routing():
 
     try:
         profiles = {profile["id"] for profile in list_profiles() if is_wireguard_profile(profile)}
+        if default and os.environ.get("MULTI_PROFILE_ENABLED", "1") == "0":
+            raise ValueError("Website routing requires multi-profile mode.")
         if default and default not in profiles:
             raise ValueError("Choose an available WireGuard profile for the default connection.")
         if len(hostnames) != len(targets) or len(hostnames) > 20:
@@ -725,18 +789,13 @@ def save_website_routing():
                 rules[domain] = target
         if len(rules) > 20:
             raise ValueError("Enter up to 20 hostnames across all website routing rules.")
-        if default:
-            exclusions = parse_routing_hostnames(load_env().get("VPN_BYPASS_DOMAINS", ""), 10)
-            if any(domain in rules and rules[domain] != "_direct" for domain in exclusions):
-                raise ValueError("A hostname already uses Direct in VPN exclusions. Clear that exclusion first.")
     except ValueError as error:
         flash(str(error), "error")
     else:
-        save_env({
+        queue_routing_settings({
             "VPN_ROUTING_DEFAULT": default,
             "VPN_ROUTING_RULES": ",".join(f"{domain}@{target}" for domain, target in rules.items()),
         })
-        flash("Website routing saved. Recreate the bridge container to apply it.", "success")
     return redirect(url_for("index", skip_wizard=1))
 
 
@@ -779,8 +838,7 @@ def save_profile():
             abort(400, "Invalid profile value.")
 
     directory = profile_path(profile_id)
-    env_values = load_env()
-    if vpn_type == "openvpn" and profile_used_for_website_routing(env_values, profile_id):
+    if vpn_type == "openvpn" and profile_used_for_website_routing(routing_settings(load_env()), profile_id):
         flash("Remove this profile from Website routing before changing it to OpenVPN.", "error")
         return redirect(url_for("index", skip_wizard=1))
     os.makedirs(directory, mode=0o700, exist_ok=True)
@@ -830,7 +888,7 @@ def delete_profile():
     if not os.path.isdir(directory):
         flash("Profile not found.", "error")
         return redirect(url_for("index", skip_wizard=1))
-    if profile_used_for_website_routing(load_env(), profile_id):
+    if profile_used_for_website_routing(routing_settings(load_env()), profile_id):
         flash("Remove this profile from Website routing before deleting it.", "error")
         return redirect(url_for("index", skip_wizard=1))
     shutil.rmtree(directory)

@@ -136,6 +136,13 @@ if [ "${MULTI_PROFILE_ENABLED:-1}" != "0" ]; then
     done
 fi
 
+# shellcheck source=/dev/null
+. /routing-settings.sh
+if ! load_routing_settings; then
+    echo "Could not read website routing settings" >&2
+    exit 1
+fi
+
 if [ -n "${VPN_ROUTING_DEFAULT:-}" ]; then
     echo "Website routing requires multi-profile mode and a configured WireGuard profile" >&2
     exit 1
@@ -204,6 +211,7 @@ write_status() {
   "vpn_mode": "${VPN_MODE:-}",
   "vpn_interface": "${VPN_INTERFACE:-}",
   "connected": ${connected},
+  "routing_revision": "${APPLIED_ROUTING_REVISION:-}",
   "tailscale_ip": "${ts_ip}",
   "hostname": "${HOSTNAME:-}",
   "auth_url": "${auth_url}",
@@ -612,6 +620,7 @@ fi
 unset TS_AUTHKEY
 configure_vpn_bypass_interface tailscale0
 refresh_vpn_bypass
+APPLIED_ROUTING_REVISION="$ROUTING_REVISION"
 
 echo "=========================================================="
 echo "  A Bridge Proton VPN -> Tailscale Exit Node está ATIVA! "
@@ -663,6 +672,10 @@ check_vpn_connectivity() {
 }
 
 while true; do
+    if routing_apply_requested; then
+        echo "Applying updated routing settings by restarting the bridge"
+        cleanup
+    fi
     refresh_vpn_bypass
     if ! kill -0 "$STATUS_WRITER_PID" 2>/dev/null; then
         echo "Erro: o escritor de telemetria parou inesperadamente. A reiniciar o container..." >&2

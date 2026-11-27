@@ -241,18 +241,26 @@ by probing through the profile's own interface.
 
 Add and connect your Proton WireGuard profiles in the dashboard. Under **Website
 routing**, choose a **Default Proton profile**, add rules to send specific
-hostnames through another profile or **Direct**, and save. Recreate the bridge
-with `docker compose up -d --build vpn-tailscale-bridge webui`. Select any of the
-bridge's exit nodes in Tailscale. The same rules apply whichever node you select.
+hostnames through another profile or **Direct**, and click **Save and apply
+routing**. The running bridge picks up the change during its next monitor
+cycle and restarts in the same container. Active connections can be interrupted
+briefly. The dashboard confirms when the updated routing is installed. Select
+any of the bridge's exit nodes in Tailscale. The same rules apply whichever node
+you select.
 
 For example, choose USA as the default, route `example.org` through Ukraine, and
 set `vinted.com,www.vinted.com` to Direct. Existing **VPN exclusions** also act
-as Direct rules. You can configure the same settings in `.env`:
+as Direct rules. You can configure the initial settings in `.env`:
 
 ```dotenv
 VPN_ROUTING_DEFAULT=usa
 VPN_ROUTING_RULES=example.org@ukraine,vinted.com@_direct,www.vinted.com@_direct
 ```
+
+Once you apply changes from the dashboard, `vpn/profiles/.website-routing.env`
+takes precedence over the three routing values from Compose. To switch back to
+managing them in Compose, remove that file and recreate the bridge and Web UI
+with your updated environment.
 
 Use profile IDs (the directory names under `vpn/profiles`), and up to 20
 hostnames in the routing rules. Clear the default to turn off website routing.
@@ -267,9 +275,10 @@ individually.
 ### VPN exclusions
 
 In the dashboard under **VPN exclusions**, enter up to 10 exact hostnames, such as
-`vinted.com,www.vinted.com`, and select **Save exclusions**. You can also set
-`VPN_BYPASS_DOMAINS=vinted.com,www.vinted.com` in `.env`. Recreate the bridge
-with `docker compose up -d --build vpn-tailscale-bridge webui`.
+`vinted.com,www.vinted.com`, and select **Save and apply exclusions**.
+This uses the same restart and dashboard confirmation as website routing.
+For initial setup, you can also set
+`VPN_BYPASS_DOMAINS=vinted.com,www.vinted.com` in `.env`.
 
 Exclusions apply to every exit node and use the bridge host’s normal Internet
 connection, exposing its public IP to the destination. The bridge periodically

@@ -120,6 +120,11 @@ services:
     tmpfs:
       - /tmp
     environment:
+      - MULTI_PROFILE_ENABLED=${MULTI_PROFILE_ENABLED:-1}
+      # Match the bridge's initial routing settings until the dashboard applies a snapshot.
+      - VPN_BYPASS_DOMAINS=${VPN_BYPASS_DOMAINS:-}
+      - VPN_ROUTING_DEFAULT=${VPN_ROUTING_DEFAULT:-}
+      - VPN_ROUTING_RULES=${VPN_ROUTING_RULES:-}
       - WEBUI_USERNAME=${WEBUI_USERNAME:-admin}
       - WEBUI_PASSWORD=${WEBUI_PASSWORD:-}
       - WEBUI_PASSWORD_FILE=${WEBUI_PASSWORD_FILE:-}
