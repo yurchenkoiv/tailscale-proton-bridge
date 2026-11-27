@@ -189,6 +189,24 @@ When at least one valid exit-node profile exists, the legacy files under `./vpn/
 The dashboard also shows the number of devices with active forwarded sessions through the exit node. This count comes from the bridge's connection tracking table, so it represents devices observed recently by the data plane, not every device that has selected the exit node while idle.
 5. **Updates**: The dashboard reads the latest stable GitHub release, shows an alert when one is available, and offers one-click installation. Enable automatic updates and choose a local host time for the daily check. The updater installs the release and rebuilds the application services.
 
+### Profile directory permissions
+
+The Web UI creates and updates profiles in the host directory `./vpn/profiles`.
+If Docker created that directory as root, the Web UI can read it but cannot
+create profiles or save website routing. From the project directory on the
+Docker host, give the directory to the Web UI's user (UID 100 and GID 101 in the
+default image):
+
+```bash
+webui_owner=$(sudo docker compose exec -T webui sh -c 'printf "%s:%s" "$(id -u)" "$(id -g)"')
+sudo chown "$webui_owner" ./vpn/profiles
+sudo chmod u+rwx ./vpn/profiles
+```
+
+If editing an existing profile still fails, check the ownership of that
+profile's own directory and files. Keep private VPN keys restricted to their
+owner. The permission change takes effect immediately through the bind mount.
+
 ### Updater setup
 
 The updater runs as a separate service. Only it has access to the Docker socket,
@@ -391,7 +409,7 @@ For HTTPS, put the certificate and key at `webui/certs/fullchain.pem` and
 `webui/certs/privkey.pem`, then set `WEBUI_PROTOCOL=https`. The certificate
 must match the hostname or IP used by the browser. A self-signed certificate
 will show a browser warning and is not suitable for a public deployment.
-The mounted certificate files must be readable by the Web UI container user (UID 1000).
+The mounted certificate files must be readable by the Web UI container user (UID 100).
 
 To restrict the published port to the Tailnet, set `WEBUI_ACCESS_MODE=tailnet`
 and use the host's Tailscale IPv4 address:
@@ -413,7 +431,7 @@ WEBUI_PASSWORD_FILE=/run/secrets/webui_password
 ```
 
 The bridge runs as root inside its container and can read its mounted secret
-files. The Web UI runs as UID 1000, so `webui_password` must be readable by
+files. The Web UI runs as UID 100, so `webui_password` must be readable by
 that UID. Never commit the `secrets/` directory contents.
 
 The `tailnet` mode also allows the usual Tailscale IPv4 and IPv6 ranges. Binding

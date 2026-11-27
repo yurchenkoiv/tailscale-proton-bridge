@@ -876,36 +876,45 @@ def save_profile():
     if vpn_type == "openvpn" and profile_used_for_website_routing(routing_settings(load_env()), profile_id):
         flash("Remove this profile from Website routing before changing it to OpenVPN.", "error")
         return redirect(url_for("index", skip_wizard=1))
-    os.makedirs(directory, mode=0o700, exist_ok=True)
     try:
-        os.chmod(directory, 0o700)
-    except OSError:
-        pass
-    uploads = (
-        ("profile_wg_conf", "wireguard.conf"),
-        ("profile_ovpn_conf", "openvpn.ovpn"),
-        ("profile_ovpn_creds", "credentials.txt"),
-    )
-    for field, filename in uploads:
-        if routing_only and field != "profile_wg_conf":
-            continue
-        uploaded = request.files.get(field)
-        if uploaded and uploaded.filename:
-            save_upload(uploaded, directory, filename)
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(directory, 0o700)
+        except OSError:
+            pass
+        uploads = (
+            ("profile_wg_conf", "wireguard.conf"),
+            ("profile_ovpn_conf", "openvpn.ovpn"),
+            ("profile_ovpn_creds", "credentials.txt"),
+        )
+        for field, filename in uploads:
+            if routing_only and field != "profile_wg_conf":
+                continue
+            uploaded = request.files.get(field)
+            if uploaded and uploaded.filename:
+                save_upload(uploaded, directory, filename)
 
-    secrets_to_save = (
-        ("profile_ts_authkey", "ts_authkey"),
-        ("profile_protonvpn_user", "protonvpn_user"),
-        ("profile_protonvpn_password", "protonvpn_password"),
-    )
-    for field, filename in (() if routing_only else secrets_to_save):
-        value = request.form.get(field, "").strip()
-        if value:
-            if "\n" in value or "\r" in value:
-                abort(400, "Invalid profile secret.")
-            save_private_file(os.path.join(directory, filename), value)
+        secrets_to_save = (
+            ("profile_ts_authkey", "ts_authkey"),
+            ("profile_protonvpn_user", "protonvpn_user"),
+            ("profile_protonvpn_password", "protonvpn_password"),
+        )
+        for field, filename in (() if routing_only else secrets_to_save):
+            value = request.form.get(field, "").strip()
+            if value:
+                if "\n" in value or "\r" in value:
+                    abort(400, "Invalid profile secret.")
+                save_private_file(os.path.join(directory, filename), value)
 
-    save_private_file(metadata_path, "".join(f"{key}={value}\n" for key, value in values.items()))
+        save_private_file(metadata_path, "".join(f"{key}={value}\n" for key, value in values.items()))
+    except PermissionError:
+        app.logger.warning("Web UI cannot write VPN profile %s under %s", profile_id, PROFILES_DIR, exc_info=True)
+        flash(
+            "Could not save the VPN profile. On the Docker host, make vpn/profiles writable "
+            "by the Web UI container user, then try again. See the README for commands.",
+            "error",
+        )
+        return redirect(url_for("index", skip_wizard=1))
     if converting_to_routing_only:
         flash(
             f"Profile '{name}' is now routing only. The running bridge will withdraw its exit-node "
