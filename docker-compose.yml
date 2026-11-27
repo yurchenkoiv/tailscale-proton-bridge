@@ -73,6 +73,7 @@ services:
       # sai pela rede local, permitindo ligações diretas em vez de relays DERP.
       - TS_PORT=${TS_PORT:-41641}
       - TS_DIRECT_UNDERLAY=${TS_DIRECT_UNDERLAY:-1}
+      - VPN_BYPASS_DOMAINS=${VPN_BYPASS_DOMAINS:-}
       - MULTI_PROFILE_ENABLED=${MULTI_PROFILE_ENABLED:-1}
 
     healthcheck:

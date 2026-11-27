@@ -12,6 +12,8 @@ RUN apk add --no-cache \
     iptables \
     ip6tables \
     conntrack-tools \
+    ipset \
+    bind-tools \
     iproute2 \
     wireguard-tools \
     wireguard-go \
@@ -38,6 +40,7 @@ RUN mkdir -p /etc/wireguard /etc/openvpn /var/lib/tailscale /var/run/tailscale
 # Copiar o script de entrada
 COPY entrypoint.sh /entrypoint.sh
 COPY multi-entrypoint.sh /multi-entrypoint.sh
+COPY vpn-bypass.sh /vpn-bypass.sh
 COPY healthcheck.sh /healthcheck.sh
 RUN chmod +x /entrypoint.sh
 RUN chmod +x /multi-entrypoint.sh

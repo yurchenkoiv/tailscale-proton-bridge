@@ -306,6 +306,7 @@ configure_profile_firewall() {
     iptables -A FORWARD -i "$ts_if" -o "$vpn_if" -j ACCEPT
     iptables -A FORWARD -i "$vpn_if" -o "$ts_if" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
     iptables -t nat -A POSTROUTING -o "$vpn_if" -j MASQUERADE
+    configure_vpn_bypass_interface "$ts_if" || exit 1
     PROFILE_FIREWALL_CONFIGURED[$i]=1
 }
 
@@ -364,6 +365,10 @@ if ! ip6tables -F FORWARD || ! ip6tables -P FORWARD DROP; then
     echo "Could not install the IPv6 forwarding kill switch" >&2
     exit 1
 fi
+
+. /vpn-bypass.sh
+init_vpn_bypass || exit 1
+refresh_vpn_bypass || exit 1
 
 for ((i = 0; i < PROFILE_COUNT; i++)); do
     profile_id="${PROFILE_IDS[$i]}"
@@ -510,6 +515,7 @@ telemetry_writer &
 TELEMETRY_PID=$!
 
 while true; do
+    refresh_vpn_bypass || exit 1
     process_pending_profiles
     if ! has_active_profile; then
         echo "No connected profile or pending authentication remains; restarting the container" >&2

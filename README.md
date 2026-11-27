@@ -237,6 +237,21 @@ monitor loop nor the Docker healthcheck (20s timeout) stalls on dead
 endpoints. In multi-profile mode each profile's tunnel is verified instead
 by probing through the profile's own interface.
 
+### VPN exclusions
+
+In the dashboard under **VPN exclusions**, enter up to 10 exact hostnames, such as
+`vinted.com,www.vinted.com`, and select **Save exclusions**. You can also set
+`VPN_BYPASS_DOMAINS=vinted.com,www.vinted.com` in `.env`. Recreate the bridge
+with `docker compose up -d --build vpn-tailscale-bridge webui`.
+
+Exclusions apply to every exit node and use the bridge host’s normal Internet
+connection, exposing its public IP to the destination. The bridge periodically
+resolves each hostname to public IPv4 addresses using its own DNS settings.
+Forwarding works by IP, so other sites sharing those addresses also bypass
+Proton VPN. If a client sees different DNS answers, its traffic may still use
+Proton VPN. List subdomains and country-specific hostnames individually. The
+Docker host needs kernel support for ipset when exclusions are enabled.
+
 ### Direct Tailscale connections
 
 By default (`TS_DIRECT_UNDERLAY=1`), only tailscaled's own WireGuard UDP port

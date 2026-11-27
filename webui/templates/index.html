@@ -96,6 +96,18 @@
   </form>
 </div>
 
+<div class="panel">
+  <h2>VPN exclusions</h2>
+  <form method="post" action="{{ url_for('save_vpn_bypass') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="vpn-bypass-domains">Hostnames</label>
+    <input type="text" id="vpn-bypass-domains" name="vpn_bypass_domains"
+           value="{{ env.VPN_BYPASS_DOMAINS }}" placeholder="vinted.com,www.vinted.com">
+    <p class="hint">Separate hostnames with commas. Applies to every exit node after recreating the bridge container. Leave blank to clear exclusions.</p>
+    <button type="submit" class="btn">Save exclusions</button>
+  </form>
+</div>
+
 <div class="panel config-panel">
   <h2>Configuration</h2>
   <p class="lede">Changes made here update the legacy single-profile configuration. When profiles exist above, this section is ignored. Restart both containers after saving to apply changes.</p>
