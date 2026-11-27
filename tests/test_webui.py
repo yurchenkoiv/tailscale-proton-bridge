@@ -369,3 +369,35 @@ def test_routing_only_profile_without_tailscale_credentials_can_be_default(clien
     )
     assert response.status_code == 302
     assert webapp.routing_settings({})["VPN_ROUTING_DEFAULT"] == "ua"
+
+
+def test_profile_permission_error_returns_to_dashboard(client, tmp_path, monkeypatch):
+    profiles_dir = tmp_path / "profiles"
+    blocked = profiles_dir / "ukraine"
+    monkeypatch.setattr(webapp, "PROFILES_DIR", str(profiles_dir))
+    original_makedirs = os.makedirs
+
+    def deny_profile_directory(path, *args, **kwargs):
+        if os.fspath(path) == str(blocked):
+            raise PermissionError("profile directory is not writable")
+        return original_makedirs(path, *args, **kwargs)
+
+    monkeypatch.setattr(webapp.os, "makedirs", deny_profile_directory)
+    with client.session_transaction() as session:
+        session["csrf"] = "known-token"
+    response = client.post(
+        "/profile/save",
+        headers=auth_header(),
+        data={
+            "csrf_token": "known-token",
+            "profile_id": "ukraine",
+            "profile_name": "Ukraine",
+            "profile_routing_only": "1",
+            "profile_wg_conf": (io.BytesIO(b"[Interface]\n"), "ukraine.conf"),
+        },
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"make vpn/profiles writable" in response.data
+    assert not blocked.exists()
