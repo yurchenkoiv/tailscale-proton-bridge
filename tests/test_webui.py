@@ -304,6 +304,7 @@ def test_list_profiles_hides_secret_contents(client, tmp_path, monkeypatch):
 
     assert profiles[0]["name"] == "Portugal"
     assert profiles[0]["ts_authkey_set"] is True
+    assert profiles[0]["routing_only"] is False
     assert "secret-key" not in json.dumps(profiles)
 
 
@@ -323,3 +324,48 @@ def test_index_renders_multi_profile_status(client, tmp_path, monkeypatch):
     assert b"Portugal" in response.data
     assert b"Exit node status" in response.data
     assert b"Devices using this exit node" in response.data
+
+
+def test_routing_only_profile_without_tailscale_credentials_can_be_default(client, tmp_path, monkeypatch):
+    profiles_dir = tmp_path / "profiles"
+    primary = profiles_dir / "usa"
+    primary.mkdir(parents=True)
+    (primary / "profile.env").write_text("VPN_TYPE=wireguard\nTS_HOSTNAME=existing-exit\n")
+    (primary / "wireguard.conf").write_text("[Interface]\n")
+    monkeypatch.setattr(webapp, "PROFILES_DIR", str(profiles_dir))
+    monkeypatch.setenv("MULTI_PROFILE_ENABLED", "1")
+    for key in webapp.ROUTING_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+    with client.session_transaction() as session:
+        session["csrf"] = "known-token"
+
+    response = client.post(
+        "/profile/save",
+        headers=auth_header(),
+        data={
+            "csrf_token": "known-token",
+            "profile_id": "ua",
+            "profile_name": "Ukraine",
+            "profile_routing_only": "1",
+            "profile_wg_conf": (io.BytesIO(b"[Interface]\n"), "ukraine.conf"),
+        },
+    )
+    assert response.status_code == 302
+    secondary = profiles_dir / "ua"
+    metadata = (secondary / "profile.env").read_text()
+    assert "ROUTING_ONLY=1\n" in metadata
+    assert "VPN_TYPE=wireguard\n" in metadata
+    assert "TS_HOSTNAME=\n" in metadata
+    assert not (secondary / "ts_authkey").exists()
+    saved = next(profile for profile in webapp.list_profiles() if profile["id"] == "ua")
+    assert saved["routing_only"] is True
+    assert webapp.is_wireguard_profile(saved)
+
+    response = client.post(
+        "/website-routing/save",
+        headers=auth_header(),
+        data={"csrf_token": "known-token", "routing_default": "ua"},
+    )
+    assert response.status_code == 302
+    assert webapp.routing_settings({})["VPN_ROUTING_DEFAULT"] == "ua"

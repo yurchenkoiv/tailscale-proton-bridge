@@ -416,6 +416,7 @@ def list_profiles():
             "id": profile_id,
             "name": _profile_value(metadata_path, "NAME", profile_id),
             "vpn_type": _profile_value(metadata_path, "VPN_TYPE", "auto"),
+            "routing_only": _profile_value(metadata_path, "ROUTING_ONLY") == "1",
             "ts_hostname": _profile_value(metadata_path, "TS_HOSTNAME", profile_id),
             "ts_extra_args": _profile_value(metadata_path, "TS_EXTRA_ARGS"),
             "wireguard": os.path.isfile(os.path.join(profile_dir, "wireguard.conf")),
@@ -538,6 +539,13 @@ def profile_used_for_website_routing(env_values, profile_id):
 
 def is_wireguard_profile(profile):
     return profile["wireguard"] and profile["vpn_type"] in ("auto", "wireguard")
+
+
+def is_exit_node_profile(profile):
+    return not profile["routing_only"] and (
+        is_wireguard_profile(profile)
+        or (profile["openvpn"] and profile["vpn_type"] in ("auto", "openvpn"))
+    )
 
 
 def parse_routing_hostnames(value, limit):
@@ -770,7 +778,10 @@ def save_website_routing():
     targets = request.form.getlist("routing_target")
 
     try:
-        profiles = {profile["id"] for profile in list_profiles() if is_wireguard_profile(profile)}
+        configured_profiles = list_profiles()
+        profiles = {profile["id"] for profile in configured_profiles if is_wireguard_profile(profile)}
+        if default and not any(map(is_exit_node_profile, configured_profiles)):
+            raise ValueError("Keep at least one profile configured as a Tailscale exit node.")
         if default and os.environ.get("MULTI_PROFILE_ENABLED", "1") == "0":
             raise ValueError("Website routing requires multi-profile mode.")
         if default and default not in profiles:
@@ -812,32 +823,56 @@ def save_profile():
         return redirect(url_for("index", skip_wizard=1))
 
     name = request.form.get("profile_name", "").strip()
-    hostname = request.form.get("profile_hostname", "").strip() or f"protonvpn-{profile_id}"
+    routing_only = request.form.get("profile_routing_only") == "1"
+    hostname = "" if routing_only else (request.form.get("profile_hostname", "").strip() or f"protonvpn-{profile_id}")
     vpn_type = request.form.get("profile_vpn_type", "auto").strip().lower()
     if not name:
         name = profile_id
     if not PROFILE_NAME_RE.fullmatch(name):
         flash("Invalid profile name. Use letters, numbers, spaces, dots, underscores, or hyphens.", "error")
         return redirect(url_for("index", skip_wizard=1))
-    if not HOSTNAME_RE.fullmatch(hostname):
+    if not routing_only and not HOSTNAME_RE.fullmatch(hostname):
         flash("Invalid Tailscale hostname for this profile.", "error")
         return redirect(url_for("index", skip_wizard=1))
     if vpn_type not in ("auto", "wireguard", "openvpn"):
         flash("Invalid VPN type for this profile.", "error")
         return redirect(url_for("index", skip_wizard=1))
 
+    directory = profile_path(profile_id)
+    metadata_path = os.path.join(directory, "profile.env")
+    converting_to_routing_only = (
+        routing_only and os.path.isfile(metadata_path)
+        and _profile_value(metadata_path, "ROUTING_ONLY") != "1"
+    )
+    if converting_to_routing_only and routing_settings(load_env()).get("VPN_ROUTING_DEFAULT") and not any(
+        profile["id"] != profile_id and is_exit_node_profile(profile) for profile in list_profiles()
+    ):
+        flash("Keep an exit-node profile while Website routing is enabled.", "error")
+        return redirect(url_for("index", skip_wizard=1))
+
+    if routing_only:
+        wireguard_upload = request.files.get("profile_wg_conf")
+        filename = wireguard_upload.filename if wireguard_upload else ""
+        if vpn_type == "openvpn" or (
+            filename and not filename.lower().endswith(".conf")
+        ) or (not filename and not os.path.isfile(os.path.join(directory, "wireguard.conf"))):
+            flash("Routing-only profiles require a WireGuard .conf file.", "error")
+            return redirect(url_for("index", skip_wizard=1))
+        vpn_type = "wireguard"
+
     values = {
         "ID": profile_id,
         "NAME": name,
         "VPN_TYPE": vpn_type,
         "TS_HOSTNAME": hostname,
-        "TS_EXTRA_ARGS": request.form.get("profile_ts_extra_args", "").strip(),
+        "TS_EXTRA_ARGS": "" if routing_only else request.form.get("profile_ts_extra_args", "").strip(),
     }
+    if routing_only:
+        values["ROUTING_ONLY"] = "1"
     for value in values.values():
         if "\n" in value or "\r" in value:
             abort(400, "Invalid profile value.")
 
-    directory = profile_path(profile_id)
     if vpn_type == "openvpn" and profile_used_for_website_routing(routing_settings(load_env()), profile_id):
         flash("Remove this profile from Website routing before changing it to OpenVPN.", "error")
         return redirect(url_for("index", skip_wizard=1))
@@ -846,17 +881,14 @@ def save_profile():
         os.chmod(directory, 0o700)
     except OSError:
         pass
-    save_private_file(
-        os.path.join(directory, "profile.env"),
-        "".join(f"{key}={value}\n" for key, value in values.items()),
-    )
-
     uploads = (
         ("profile_wg_conf", "wireguard.conf"),
         ("profile_ovpn_conf", "openvpn.ovpn"),
         ("profile_ovpn_creds", "credentials.txt"),
     )
     for field, filename in uploads:
+        if routing_only and field != "profile_wg_conf":
+            continue
         uploaded = request.files.get(field)
         if uploaded and uploaded.filename:
             save_upload(uploaded, directory, filename)
@@ -866,14 +898,25 @@ def save_profile():
         ("profile_protonvpn_user", "protonvpn_user"),
         ("profile_protonvpn_password", "protonvpn_password"),
     )
-    for field, filename in secrets_to_save:
+    for field, filename in (() if routing_only else secrets_to_save):
         value = request.form.get(field, "").strip()
         if value:
             if "\n" in value or "\r" in value:
                 abort(400, "Invalid profile secret.")
             save_private_file(os.path.join(directory, filename), value)
 
-    flash(f"Profile '{name}' saved. Restart the bridge to create or update its exit node.", "success")
+    save_private_file(metadata_path, "".join(f"{key}={value}\n" for key, value in values.items()))
+    if converting_to_routing_only:
+        flash(
+            f"Profile '{name}' is now routing only. The running bridge will withdraw its exit-node "
+            "advertisement when it applies the change. In Tailscale Admin Console → Machines, "
+            "find the old device and select Remove.",
+            "success",
+        )
+    elif routing_only:
+        flash(f"Routing-only profile '{name}' saved. Restart the bridge to start or update its WireGuard tunnel.", "success")
+    else:
+        flash(f"Profile '{name}' saved. Restart the bridge to create or update its exit node.", "success")
     return redirect(url_for("index", skip_wizard=1))
 
 

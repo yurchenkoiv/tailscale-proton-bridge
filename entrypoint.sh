@@ -126,18 +126,19 @@ profile_has_vpn_config() {
     esac
 }
 
-# When the Web UI has created profiles, run the multi-exit-node supervisor.
-# Without profiles, keep the legacy single-profile mode.
+# shellcheck source=/dev/null
+. /routing-settings.sh
+
+# Routing-only profiles cannot replace the legacy exit node by themselves.
 if [ "${MULTI_PROFILE_ENABLED:-1}" != "0" ]; then
-    for profile_metadata in /etc/bridge-profiles/*/profile.env; do
-        if [ -f "$profile_metadata" ] && profile_has_vpn_config "$profile_metadata"; then
+    for profile_metadata in "${PROFILE_ROOT:-/etc/bridge-profiles}"/*/profile.env; do
+        if [ -f "$profile_metadata" ] && ! profile_is_routing_only "$profile_metadata" &&
+           profile_has_vpn_config "$profile_metadata"; then
             exec /multi-entrypoint.sh
         fi
     done
 fi
 
-# shellcheck source=/dev/null
-. /routing-settings.sh
 if ! load_routing_settings; then
     echo "Could not read website routing settings" >&2
     exit 1
